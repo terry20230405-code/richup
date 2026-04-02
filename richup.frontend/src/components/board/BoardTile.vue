@@ -3,6 +3,8 @@
     class="tile-card"
     :class="[typeClass, `side--${side}`, { 'tile-current': hasCurrentPlayer }]"
     :style="cardStyle"
+    style="cursor: pointer"
+    @click="handleClick"
   >
     <!-- ── Corner tiles ──────────────────────────────────────────── -->
     <template v-if="side === 'corner'">
@@ -27,7 +29,32 @@
       <!-- 1. Outer edge: Price zone -->
       <div class="tile-price-zone">
         <div class="price-content">
-          <span v-if="(tile.type === 'PROPERTY' || tile.type === 'AIRPORT') && tile.basePrice != null" class="tile-price">${{ tile.basePrice }}</span>
+          <!-- AIRPORT: always show price -->
+          <span v-if="tile.type === 'AIRPORT' && tile.basePrice != null" class="tile-price">${{ tile.basePrice }}</span>
+
+          <!-- PROPERTY level 0: show price -->
+          <span
+            v-else-if="tile.type === 'PROPERTY' && tile.basePrice != null && (tile.buildingLevel ?? 0) === 0"
+            class="tile-price"
+          >${{ tile.basePrice }}</span>
+
+          <!-- PROPERTY level 1–4: house count -->
+          <span
+            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) >= 1 && (tile.buildingLevel ?? 0) <= 4"
+            class="building-indicator"
+          >🏠×{{ tile.buildingLevel }}</span>
+
+          <!-- PROPERTY level 5: hotel -->
+          <span
+            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) === 5"
+            class="building-indicator"
+          >🏨</span>
+
+          <!-- PROPERTY level 6: landmark -->
+          <span
+            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) === 6"
+            class="building-indicator"
+          >🏰</span>
         </div>
       </div>
 
@@ -36,17 +63,6 @@
         <div class="body-content">
           <span class="tile-name">{{ displayName }}</span>
 
-          <div v-if="showBuildingDots" class="building-dots">
-            <span
-              v-for="i in 5"
-              :key="i"
-              class="building-dot"
-              :class="{
-                'building-dot--filled': i <= (tile.buildingLevel ?? 0),
-                'building-dot--hotel': i === 5 && (tile.buildingLevel ?? 0) >= 5,
-              }"
-            />
-          </div>
         </div>
       </div>
 
@@ -78,21 +94,27 @@
     <!-- Floating text (e.g. tax deduction) -->
     <FloatingText v-if="activeFloatingText" :text="activeFloatingText.text" />
 
-    <!-- Hover overlay -->
-    <div class="tile-overlay">
-      <p class="tile-overlay-title">{{ displayName }}</p>
-      <p v-for="detail in detailLines" :key="detail" class="tile-overlay-line">{{ detail }}</p>
-    </div>
+    <!-- Click popover (Teleports to body) -->
+    <TilePopover
+      v-if="isSelected && anchorRect"
+      :tile="tile"
+      :display-name="displayName"
+      :anchor-rect="anchorRect"
+      :side="side"
+      :owner-color="ownerColor"
+    />
   </article>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 import type { TilePublicView } from '@/types';
 import type { TileSide } from './BoardView.vue';
 import FloatingText from './FloatingText.vue';
+import TilePopover from './TilePopover.vue';
 import { useFloatingTextStore } from '@/stores/useFloatingTextStore';
+import { useTileSelection } from '@/composables/useTileSelection';
 
 interface TilePlayerToken {
   id: string;
@@ -112,6 +134,17 @@ const floatingTextStore = useFloatingTextStore();
 const activeFloatingText = computed(() =>
   floatingTextStore.texts.find((t) => t.tilePosition === props.tile.id) ?? null,
 );
+
+// ── Click-to-open popover ────────────────────────────────────────────
+const tileSelection = useTileSelection();
+const anchorRect    = ref<DOMRect | null>(null);
+const isSelected    = computed(() => tileSelection.selectedTileId.value === props.tile.id);
+
+const handleClick = (e: MouseEvent) => {
+  e.stopPropagation();
+  anchorRect.value = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  tileSelection.toggle(props.tile.id);
+};
 
 const GROUP_COLORS: Record<string, string> = {
   BROWN:      '#8B4513',
@@ -230,13 +263,6 @@ const typeClass = computed(() => `tile-${props.tile.type.toLowerCase()}`);
 
 const hasCurrentPlayer = computed(() => props.players.some((p) => p.isCurrent));
 
-const showBuildingDots = computed(
-  () =>
-    props.tile.type === 'PROPERTY' &&
-    props.tile.ownerId != null &&
-    (props.tile.buildingLevel ?? 0) > 0,
-);
-
 /** Translate tile name: Chinese → English, fallback to original */
 const displayName = computed(() => TILE_NAME_EN[props.tile.name] ?? props.tile.name);
 
@@ -267,41 +293,6 @@ const tileIcon = computed(() => TILE_ICONS[props.tile.type] ?? '');
 
 const cornerIcon = computed(() => CORNER_ICONS[props.tile.type] ?? '★');
 
-const detailLines = computed(() => {
-  if (props.tile.type === 'PROPERTY') {
-    return [
-      props.tile.basePrice ? `Price $${props.tile.basePrice}` : 'Property tile',
-      props.tile.baseRent ? `Base rent $${props.tile.baseRent}` : null,
-      props.tile.buildingLevel ? `Level ${props.tile.buildingLevel} / 5` : 'No buildings yet',
-      props.tile.isMortgaged ? 'Mortgaged' : null,
-    ].filter((l): l is string => Boolean(l));
-  }
-  if (props.tile.type === 'AIRPORT') {
-    return [
-      props.tile.basePrice ? `Price $${props.tile.basePrice}` : 'Transit tile',
-      props.tile.passThruToll ? `Pass toll $${props.tile.passThruToll}` : 'Toll scales with network',
-    ];
-  }
-  if (props.tile.type === 'TEMPLE') {
-    return [
-      props.tile.basePrice ? `Price $${props.tile.basePrice}` : 'Temple tile',
-      props.tile.prayFee ? `Pray fee $${props.tile.prayFee}` : 'Blessing available here',
-      props.tile.isLit ? 'Temple is lit' : 'Temple is quiet',
-    ];
-  }
-  if (props.tile.type === 'CASINO') {
-    return [
-      props.tile.maxBet ? `Max bet $${props.tile.maxBet}` : 'Place a bet here',
-      props.tile.betMultiple ? `Multiplier x${props.tile.betMultiple}` : 'Fortune favors the bold',
-    ];
-  }
-  if (props.tile.type === 'TAX')        return ['Pay the bank when you land here'];
-  if (props.tile.type === 'SURPRISE')   return ['Random event tile'];
-  if (props.tile.type === 'GO_TO_JAIL') return ['Forced move to the jail tile'];
-  if (props.tile.type === 'GO')         return ['Collect your pass bonus'];
-  if (props.tile.type === 'JAIL')       return ['Players wait here when jailed'];
-  return ['Safe resting tile'];
-});
 </script>
 
 <style scoped>
@@ -359,6 +350,30 @@ const detailLines = computed(() => {
   line-height: 1;
 }
 
+.building-indicator {
+  font-size: 0.65rem;
+  line-height: 1;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+/* Rotate building indicators so they face the center hub */
+.side--bottom .building-indicator {
+  transform: rotate(180deg);
+}
+
+/* Left/right sides: override vertical writing-mode, then rotate toward center */
+.side--left .building-indicator {
+  writing-mode: horizontal-tb;
+  transform: rotate(90deg);
+}
+
+/* side--right parent already has rotate(180deg); child rotate(90deg) = -90deg on screen */
+.side--right .building-indicator {
+  writing-mode: horizontal-tb;
+  transform: rotate(90deg);
+}
+
 /* ── 2. Middle: Body ────────────────────────────────────────────── */
 .tile-body {
   flex: 1;
@@ -408,22 +423,6 @@ const detailLines = computed(() => {
 .side--bottom .tile-name {
   transform: translateY(-1px);
 }
-
-.building-dots {
-  display: flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.building-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.1);
-}
-
-.building-dot--filled { background: #27ae60; }
-.building-dot--hotel  { width: 6px; height: 6px; border-radius: 2px; background: #c0392b; }
 
 /* ── Text rotation: left / right columns ────────────────────────────
  *
@@ -596,25 +595,10 @@ const detailLines = computed(() => {
   margin-top: 4px;
 }
 
-/* ── Hover overlay ──────────────────────────────────────────────── */
-.tile-overlay {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  align-content: end;
-  gap: 4px;
-  padding: 10px 8px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.85));
-  color: #fff;
-  opacity: 0;
-  transition: opacity 150ms ease;
-  pointer-events: none;
-  z-index: 10;
+/* Subtle hover highlight so tiles feel interactive */
+.tile-card:hover {
+  filter: brightness(1.04);
 }
-
-.tile-card:hover .tile-overlay { opacity: 1; }
-.tile-overlay-title { margin: 0; font-size: 0.8rem; font-weight: 700; }
-.tile-overlay-line  { margin: 0; font-size: 0.65rem; line-height: 1.35; color: rgba(255, 255, 255, 0.85); }
 
 /* ── Responsive ─────────────────────────────────────────────────── */
 @media (max-width: 900px) {

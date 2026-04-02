@@ -9,7 +9,7 @@ import type { GameConfig } from '../types/GameSession.types';
  */
 export const DEFAULT_GAME_CONFIG: Readonly<GameConfig> = Object.freeze({
   // ── Starting resources ─────────────────────────────────────────────────────
-  startingCash: 1500,          // Each player's starting cash (placeholder)
+  startingCash: 15000,          // Each player's starting cash (placeholder)
 
   // ── GO / Start tile ────────────────────────────────────────────────────────
   goSalary: 300,               // Bonus for passing GO (placeholder)

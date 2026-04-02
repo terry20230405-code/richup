@@ -50,6 +50,22 @@ export function buildHouse(
     throw new RuleViolationError('Already at maximum building level');
   }
 
+  // Even-building rule: must build on the lowest-level property in the group first.
+  {
+    const groupTiles = session.board.filter(
+      (t): t is PropertyTile =>
+        t.type === TileType.PROPERTY &&
+        (t as PropertyTile).colorGroup === tile.colorGroup &&
+        (t as PropertyTile).ownerId === playerId,
+    );
+    const minLevel = Math.min(...groupTiles.map(t => t.buildingLevel));
+    if (tile.buildingLevel > minLevel) {
+      throw new RuleViolationError(
+        `Even-building rule: must build on properties with fewer buildings first`,
+      );
+    }
+  }
+
   validateEvenBuilding(session, playerId, tile.colorGroup);
 
   const cost = tile.buildCost;
@@ -88,6 +104,22 @@ export function buildHotel(
   }
   if (tile.buildingLevel >= MAX_LEVEL) {
     throw new RuleViolationError('Already at maximum building level');
+  }
+
+  // Even-building rule: must build on the lowest-level property in the group first.
+  {
+    const groupTiles = session.board.filter(
+      (t): t is PropertyTile =>
+        t.type === TileType.PROPERTY &&
+        (t as PropertyTile).colorGroup === tile.colorGroup &&
+        (t as PropertyTile).ownerId === playerId,
+    );
+    const minLevel = Math.min(...groupTiles.map(t => t.buildingLevel));
+    if (tile.buildingLevel > minLevel) {
+      throw new RuleViolationError(
+        `Even-building rule: must build on properties with fewer buildings first`,
+      );
+    }
   }
 
   validateEvenBuilding(session, playerId, tile.colorGroup);
