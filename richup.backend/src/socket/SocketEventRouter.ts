@@ -520,6 +520,34 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     }
   });
 
+  // ── action:PAY_TAX ────────────────────────────────────────────────────────
+  socket.on('action:PAY_TAX', () => {
+    const ctx = getContext(socket);
+    if (!ctx) return;
+    const { session, playerId } = ctx;
+
+    if (!phaseGuard(socket, session, [TurnPhase.EVENT_TRIGGER], 'PAY_TAX')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'PAY_TAX')) return;
+
+    const taxAmount = session.pendingTileEvent?.taxAmount as Money | undefined;
+    if (!taxAmount) {
+      socket.emit('ACTION_REJECTED', { action: 'PAY_TAX', reason: 'No pending tax amount', code: 'RULE_VIOLATION' });
+      return;
+    }
+
+    const player = requirePlayer(session, playerId);
+    session.pendingTileEvent = null;
+
+    if (player.cash >= taxAmount) {
+      cashChange(session, playerId, -taxAmount, 'TAX', io);
+      broadcastToRoom(io, session.id, 'TAX_PAID', { playerId, amount: taxAmount });
+      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+    } else {
+      enterDyingRescue(session, playerId, BankruptcyType.TYPE_A, null, taxAmount, io);
+      voidOutgoingTrades(session, playerId, TradeVoidReason.PLAYER_DYING, io);
+    }
+  });
+
   // ── action:ROLL_FOR_DOUBLE (in jail) ──────────────────────────────────────
   socket.on('action:ROLL_FOR_DOUBLE', () => {
     const ctx = getContext(socket);
@@ -824,18 +852,22 @@ function handleLanding(
     }
 
     case TileType.TAX: {
-      // Tax amount placeholder — per PRD Phase 2
-      const taxAmount = 500 as Money;
       const player = requirePlayer(session, playerId);
+      // Random tax rate between 5% and 15% of current cash
+      const taxRate = 0.05 + Math.random() * 0.10;
+      const taxAmount = Math.max(1, Math.floor(player.cash * taxRate)) as Money;
 
-      if (player.cash >= taxAmount) {
-        cashChange(session, playerId, -taxAmount, 'TAX', io);
-        broadcastToRoom(io, session.id, 'TAX_PAID', { playerId, amount: taxAmount });
-        StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
-      } else {
-        enterDyingRescue(session, playerId, BankruptcyType.TYPE_A, null, taxAmount, io);
-        voidOutgoingTrades(session, playerId, TradeVoidReason.PLAYER_DYING, io);
-      }
+      // Hold the amount — deduction happens when player confirms via PAY_TAX action
+      session.pendingTileEvent = { tileId: tile.id, availableActions: ['PAY_TAX'], taxAmount };
+      StateMachine.transition(session, TurnPhase.EVENT_TRIGGER);
+      broadcastToRoom(io, session.id, 'TILE_EVENT', {
+        playerId,
+        tileId: tile.id,
+        tileType: tile.type,
+        phase: TurnPhase.EVENT_TRIGGER,
+        availableActions: ['PAY_TAX'],
+        taxAmount,
+      });
       break;
     }
 
@@ -859,12 +891,22 @@ function handleLanding(
     case TileType.TEMPLE: {
       const templeResult = handleTempleLanding(session, playerId, tile.id, io);
       if (!templeResult.rentCharged && !templeResult.propCardDrawn) {
-        // Owner on unlit temple: offer to pray
-        session.pendingTileEvent = {
-          tileId: tile.id,
-          availableActions: tile.ownerId === playerId ? ['TEMPLE_PRAY', 'SKIP_PURCHASE'] : ['SKIP_PURCHASE'],
-        };
+        const isUnowned = !tile.ownerId;
+        const isOwner = tile.ownerId === playerId;
+        const availableActions = isUnowned
+          ? ['BUY_PROPERTY', 'SKIP_PURCHASE']
+          : isOwner
+            ? ['TEMPLE_PRAY', 'SKIP_PURCHASE']
+            : ['SKIP_PURCHASE'];
+        session.pendingTileEvent = { tileId: tile.id, availableActions };
         StateMachine.transition(session, TurnPhase.EVENT_TRIGGER);
+        broadcastToRoom(io, session.id, 'TILE_EVENT', {
+          playerId,
+          tileId: tile.id,
+          tileType: tile.type,
+          phase: TurnPhase.EVENT_TRIGGER,
+          availableActions,
+        });
       } else {
         StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
       }

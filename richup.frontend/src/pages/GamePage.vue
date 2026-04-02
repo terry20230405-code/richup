@@ -36,16 +36,18 @@
         >
           <template #center>
             <CenterHub
-              :room-code="roomNumberDisplay"
               :heading="centerHeading"
               :status-line="centerStatusLine"
               :description="centerDescription"
-              :phase-label="turnPhaseLabel"
               :current-player-color="currentPlayerColor"
               :active-tile-name="activeTile?.name ?? null"
               :active-tile-type="activeTileTypeLabel"
               :active-tile-price="activeTile?.basePrice ?? null"
             >
+              <template #pills>
+                <EventLogStream />
+              </template>
+
               <template #actions>
                 <div class="hub-stack">
                   <div v-if="isMyTurn && gameStore.currentPhase === 'WAITING_FOR_ACTION'" class="button-row">
@@ -65,7 +67,11 @@
                       type="button"
                       @click="action.handler()"
                     >
-                      {{ action.id === 'BUY_PROPERTY' && activeTile?.basePrice ? `${action.label} ($${activeTile.basePrice})` : action.label }}
+                      {{ action.id === 'BUY_PROPERTY' && activeTile?.basePrice
+                        ? `${action.label} ($${activeTile.basePrice})`
+                        : action.id === 'PAY_TAX' && gameStore.pendingTaxAmount
+                          ? `${action.label} ($${gameStore.pendingTaxAmount})`
+                          : action.label }}
                     </button>
                   </div>
 
@@ -246,20 +252,6 @@
         <TradePanel />
         <PropCardHand />
 
-        <section class="surface">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Event Log</p>
-              <h3>Recent activity</h3>
-            </div>
-          </div>
-          <p v-if="recentLogs.length === 0" class="muted-note">Server events will appear here once the room starts moving.</p>
-          <ul v-else class="event-log">
-            <li v-for="entry in recentLogs" :key="entry.id" :class="['event-log-entry', `event-log-entry--${entry.type}`]">
-              {{ entry.message }}
-            </li>
-          </ul>
-        </section>
       </aside>
     </section>
   </section>
@@ -271,6 +263,7 @@ import { useRouter } from 'vue-router';
 
 import BoardView from '@/components/board/BoardView.vue';
 import CenterHub from '@/components/board/CenterHub.vue';
+import EventLogStream from '@/components/board/EventLogStream.vue';
 import PlayerPanel from '@/components/panels/PlayerPanel.vue';
 import PropCardHand from '@/components/panels/PropCardHand.vue';
 import TradePanel from '@/components/panels/TradePanel.vue';
@@ -284,6 +277,7 @@ import {
   endTurn,
   passAuction,
   payBail,
+  payTax,
   placeCasinoBet,
   placeAuctionBid,
   rollDice,
@@ -293,6 +287,7 @@ import {
   startGame,
   templePray,
 } from '@/socket/actions';
+import { useFloatingTextStore } from '@/stores/useFloatingTextStore';
 import { gameSocket } from '@/socket/client';
 import { readStoredSocketSession } from '@/socket/storage';
 import { useEventLogStore } from '@/stores/useEventLogStore';
@@ -314,6 +309,13 @@ const session = ref(readStoredSocketSession());
 const casinoBetAmount = ref(0);
 const auctionBidAmount = ref(0);
 const actionTaken = ref(false);
+const floatingTextStore = useFloatingTextStore();
+
+const triggerFloatingTax = (): void => {
+  const pos = selfStore.position;
+  const amt = gameStore.pendingTaxAmount;
+  if (pos !== null && amt) floatingTextStore.show(pos, `-$${amt}`);
+};
 
 const refreshSession = (): void => {
   session.value = readStoredSocketSession();
@@ -440,12 +442,13 @@ const centerDescription = computed(() => {
   if (isMyTurn.value && gameStore.currentPhase === 'WAITING_FOR_ACTION') return 'Your turn is live. Roll the dice from the command area below.';
   if (isMyTurn.value && gameStore.currentPhase === 'BUILD_PHASE') return 'Upgrade any eligible property before ending the phase.';
   if (isMyTurn.value && gameStore.currentPhase === 'END_TURN_PENDING') return 'Your move is resolved. End the turn when you are ready.';
+  if (isMyTurn.value && gameStore.currentPhase === 'EVENT_TRIGGER' && activeTile.value?.type === 'TAX' && gameStore.pendingTaxAmount)
+    return `Tax Event! You must pay $${gameStore.pendingTaxAmount} to continue.`;
   return isMyTurn.value
     ? `Your turn is active. The board is currently in the ${turnPhaseLabel.value.toLowerCase()} phase.`
     : `${currentPlayerLabel.value} is currently handling the ${turnPhaseLabel.value.toLowerCase()} phase.`;
 });
 
-const recentLogs = computed(() => eventLogStore.entries.slice(-8).reverse());
 
 const activeTile = computed(() => {
   if (!gameStore.hasBoard || !gameStore.currentTurnPlayerId) return null;
@@ -471,6 +474,7 @@ const ACTION_CONFIG: Record<string, { label: string; tone: 'primary' | 'dark' | 
   CHOOSE_AUCTION: { label: 'Auction It', tone: 'primary', handler: () => { actionTaken.value = true; chooseAuction(); } },
   SKIP_PURCHASE: { label: 'Skip Purchase', tone: 'primary', handler: () => { actionTaken.value = true; skipPurchase(); } },
   PAY_BAIL: { label: 'Pay Bail', tone: 'primary', handler: () => payBail() },
+  PAY_TAX: { label: 'Pay Tax', tone: 'danger', handler: () => { triggerFloatingTax(); actionTaken.value = true; payTax(); } },
   ROLL_FOR_DOUBLE: { label: 'Roll For Double', tone: 'primary', handler: () => rollForDouble() },
   PRAY: { label: 'Pray', tone: 'dark', handler: () => templePray() },
   DECLARE_BANKRUPTCY: { label: 'Declare Bankruptcy', tone: 'danger', handler: () => declareBankruptcy() },
@@ -543,21 +547,25 @@ const handleClearSession = async (): Promise<void> => {
 };
 
 watch(
-  [() => gameStore.currentTurnPlayerId, () => gameStore.turnNumber],
+  [() => gameStore.currentTurnPlayerId, () => gameStore.turnNumber, () => gameStore.currentPhase],
   () => { actionTaken.value = false; },
 );
+
+const onActionRejected = (): void => { actionTaken.value = false; };
 
 onMounted(() => {
   refreshSession();
   gameSocket.on('connect', syncConnectionState);
   gameSocket.on('disconnect', syncConnectionState);
   gameSocket.on('connect_error', syncConnectionState);
+  gameSocket.on('ACTION_REJECTED', onActionRejected);
 });
 
 onBeforeUnmount(() => {
   gameSocket.off('connect', syncConnectionState);
   gameSocket.off('disconnect', syncConnectionState);
   gameSocket.off('connect_error', syncConnectionState);
+  gameSocket.off('ACTION_REJECTED', onActionRejected);
 });
 </script>
 
@@ -589,6 +597,9 @@ onBeforeUnmount(() => {
 .button-row, .input-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .pill, .drawer-link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 10px 24px; border-radius: 999px; border: 0; font-family: 'Itim', cursive; font-size: 1rem; font-weight: 400; text-decoration: none; cursor: pointer; }
 .pill--primary { background: #b8793a; color: #fff; box-shadow: 0 4px 14px rgba(143, 80, 20, 0.35); font-size: 1.05rem; }
+.hub-stack .button-row { flex-wrap: nowrap; gap: 8px; }
+.hub-stack .button-row .pill { flex: 1; min-width: 0; min-height: 40px; padding: 8px 12px; font-size: 0.875rem; }
+.hub-stack .button-row .pill--primary { font-size: 0.875rem; }
 .pill--primary:hover { background: #c98540; box-shadow: 0 6px 18px rgba(143, 80, 20, 0.45); }
 .pill--dark, .drawer-link { background: #1f1a14; color: #fff7ed; }
 .pill--soft { background: #eadbc2; color: #4e3b27; }
@@ -603,14 +614,20 @@ onBeforeUnmount(() => {
 .auction-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .auction-grid div { display: grid; gap: 4px; }
 .auction-grid span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #8f5d23; }
-.event-log { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
-.event-log-entry { font-size: 0.84rem; line-height: 1.5; padding: 10px 12px; border-radius: 14px; color: #4e3b27; background: rgba(255, 255, 255, 0.72); }
-.event-log-entry--warn { color: #7a4f00; background: rgba(255, 220, 120, 0.25); }
-.event-log-entry--error { color: #8b1c1c; background: rgba(255, 180, 180, 0.3); }
 .paused-overlay { position: fixed; inset: 0; z-index: 100; background: rgba(10, 6, 2, 0.6); display: grid; place-items: center; backdrop-filter: blur(4px); }
 .paused-card { padding: 36px 48px; border-radius: 28px; background: linear-gradient(180deg, rgba(255, 252, 242, 0.98), rgba(244, 234, 210, 0.98)); border: 1px solid rgba(120, 90, 40, 0.2); box-shadow: 0 30px 60px rgba(30, 18, 6, 0.25); text-align: center; max-width: 420px; }
 .rescue-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 40; padding: 12px 20px; background: linear-gradient(90deg, rgba(255, 220, 100, 0.96), rgba(255, 200, 60, 0.96)); color: #5a3a00; }
 .rescue-banner--self { background: linear-gradient(90deg, rgba(255, 100, 100, 0.95), rgba(220, 60, 60, 0.95)); color: #fff; }
+.event-info {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 247, 225, 0.84), rgba(255, 236, 188, 0.76));
+  border: 1px solid rgba(92, 66, 41, 0.1);
+  margin-bottom: 12px;
+  text-align: center;
+  font-weight: 500;
+  color: #26180d;
+}
 @media (max-width: 1080px) { .game-scene { --drawer-width: 320px; } .auction-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .game-scene { --board-size: min(calc(100vw - 24px), calc(100vh - 24px)); } .game-scene.drawer-open .board-wrapper { transform: translate(-50%, -50%); } .side-drawer { width: min(100vw, 420px); } .game-scene.drawer-open .drawer-toggle { right: min(100vw, 420px); } }
 @media (max-width: 720px) { .game-scene { --board-size: calc(100vw - 16px); } .drawer-toggle { top: auto; bottom: 80px; right: 0; transform: none; border-radius: 12px 0 0 12px; } .game-scene.drawer-open .drawer-toggle { right: 100vw; } .side-drawer { width: 100vw; padding: 18px 16px 24px; } .stats-grid { grid-template-columns: 1fr; } .button-row, .input-row { flex-direction: column; align-items: stretch; } }

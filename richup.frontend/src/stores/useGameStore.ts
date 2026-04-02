@@ -30,6 +30,8 @@ interface GameState {
   /** Set when a player enters DYING phase. Cleared on PLAYER_RESCUED / PLAYER_BANKRUPT. */
   dyingPlayerId: PlayerId | null;
   rescueWindowEndsAt: number | null;
+  /** Set when landing on a TAX tile. Cleared on TAX_PAID or turn start. */
+  pendingTaxAmount: number | null;
 }
 
 const cloneTile = (tile: TilePublicView): TilePublicView => ({
@@ -65,6 +67,7 @@ const createInitialGameState = (): GameState => ({
   pauseCountdownSeconds: 0,
   dyingPlayerId: null,
   rescueWindowEndsAt: null,
+  pendingTaxAmount: null,
 });
 
 export const useGameStore = defineStore('game', {
@@ -103,6 +106,10 @@ export const useGameStore = defineStore('game', {
       this.turnNumber = turnNumber;
       this.currentPhase = phase;
       this.availableActions = [];
+      this.pendingTaxAmount = null;
+    },
+    setPendingTaxAmount(amount: number | null) {
+      this.pendingTaxAmount = amount;
     },
     setAvailableActions(actions: string[]) {
       this.availableActions = [...actions];

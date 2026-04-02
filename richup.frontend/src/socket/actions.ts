@@ -29,6 +29,7 @@ export type GameActionEvent =
   | 'action:TEMPLE_PRAY'
   | 'action:CASINO_BET'
   | 'action:PAY_BAIL'
+  | 'action:PAY_TAX'
   | 'action:AUCTION_BID'
   | 'action:AUCTION_PASS'
   | 'action:BUILD_HOUSE'
@@ -91,6 +92,10 @@ export const placeCasinoBet = (amount: number): void => {
 
 export const payBail = (): void => {
   emitAction('action:PAY_BAIL', EMPTY_PAYLOAD);
+};
+
+export const payTax = (): void => {
+  emitAction('action:PAY_TAX', EMPTY_PAYLOAD);
 };
 
 export const placeAuctionBid = (amount: number): void => {

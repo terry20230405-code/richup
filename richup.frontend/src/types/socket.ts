@@ -74,6 +74,7 @@ export interface TileEventPayload {
   tileType: TileType;
   phase: TurnPhase;
   availableActions: string[];
+  taxAmount?: number;
 }
 
 export interface PropertyPurchasedPayload {

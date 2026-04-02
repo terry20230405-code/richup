@@ -46,6 +46,9 @@ export function buildHouse(
   if (tile.buildingLevel >= MAX_HOUSE_LEVEL) {
     throw new RuleViolationError('Must build a hotel, not more houses');
   }
+  if (tile.buildingLevel >= MAX_LEVEL) {
+    throw new RuleViolationError('Already at maximum building level');
+  }
 
   validateEvenBuilding(session, playerId, tile.colorGroup);
 

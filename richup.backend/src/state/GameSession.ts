@@ -130,11 +130,11 @@ export function advanceTurn(session: GameSession): void {
   let next = (prevIndex + 1) % total;
   let looped = 0;
 
-  // Skip bankrupt players
+  // Skip bankrupt/disconnected players
   while (looped < total) {
     const pid = session.playerOrder[next];
     const p = pid ? session.players.get(pid) : undefined;
-    if (p && p.status !== PlayerStatus.BANKRUPT) break;
+    if (p && p.status !== PlayerStatus.BANKRUPT && p.isConnected) break;
     next = (next + 1) % total;
     looped++;
   }

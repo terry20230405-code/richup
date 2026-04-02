@@ -100,6 +100,7 @@ export interface GameConfig {
 export interface PendingTileEvent {
   tileId: TileId;
   availableActions: string[];  // e.g. ['BUY_PROPERTY', 'CHOOSE_AUCTION', 'SKIP_PURCHASE']
+  taxAmount?: number;          // Set for TAX tiles — stored until PAY_TAX action arrives
 }
 
 /** Context for a pending bankruptcy resolution */

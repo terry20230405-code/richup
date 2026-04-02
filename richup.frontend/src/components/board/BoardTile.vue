@@ -75,6 +75,9 @@
       </div>
     </template>
 
+    <!-- Floating text (e.g. tax deduction) -->
+    <FloatingText v-if="activeFloatingText" :text="activeFloatingText.text" />
+
     <!-- Hover overlay -->
     <div class="tile-overlay">
       <p class="tile-overlay-title">{{ displayName }}</p>
@@ -88,6 +91,8 @@ import { computed } from 'vue';
 
 import type { TilePublicView } from '@/types';
 import type { TileSide } from './BoardView.vue';
+import FloatingText from './FloatingText.vue';
+import { useFloatingTextStore } from '@/stores/useFloatingTextStore';
 
 interface TilePlayerToken {
   id: string;
@@ -102,6 +107,11 @@ const props = defineProps<{
   ownerColor?: string;
   side: TileSide;
 }>();
+
+const floatingTextStore = useFloatingTextStore();
+const activeFloatingText = computed(() =>
+  floatingTextStore.texts.find((t) => t.tilePosition === props.tile.id) ?? null,
+);
 
 const GROUP_COLORS: Record<string, string> = {
   BROWN:      '#8B4513',

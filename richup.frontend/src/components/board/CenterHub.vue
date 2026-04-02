@@ -3,10 +3,7 @@
     <header class="hub-header">
       <div class="hub-topline">
         <p class="hub-eyebrow">Center Command</p>
-        <div class="hub-pills">
-          <span class="hub-pill">{{ roomCode ? `Room ${roomCode}` : 'Room pending' }}</span>
-          <span class="hub-pill">{{ phaseLabel }}</span>
-        </div>
+        <slot name="pills" />
       </div>
 
       <div class="hub-title-row">
@@ -44,18 +41,15 @@
 <script setup lang="ts">
 withDefaults(
   defineProps<{
-    roomCode?: string | null;
     heading: string;
     statusLine: string;
     description: string;
-    phaseLabel: string;
     currentPlayerColor?: string | null;
     activeTileName?: string | null;
     activeTileType?: string | null;
     activeTilePrice?: number | null;
   }>(),
   {
-    roomCode: null,
     currentPlayerColor: null,
     activeTileName: null,
     activeTileType: null,
@@ -89,31 +83,13 @@ withDefaults(
 
 .hub-eyebrow {
   margin: 0;
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #8f5d23;
 }
 
-.hub-pills {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.hub-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.68);
-  border: 1px solid rgba(92, 66, 41, 0.12);
-  font-size: 0.76rem;
-  font-weight: 700;
-  color: #5e4731;
-}
 
 .hub-title-row {
   display: flex;

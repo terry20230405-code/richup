@@ -114,6 +114,7 @@ export const registerSocketListeners = (socket: Socket): void => {
 
   socket.on('DICE_ROLLED', (payload: DiceRolledPayload) => {
     gameStore.setCurrentPhase('MOVING');
+    gameStore.setAvailableActions([]);
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const doubleTag = payload.isDouble ? ' 双！' : '';
@@ -150,20 +151,21 @@ export const registerSocketListeners = (socket: Socket): void => {
   socket.on('START_PASSED', (payload: StartPassedPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 经过起点，获得 $${payload.bonusAmount}`);
+    eventLogStore.push('positive', `${name} 经过起点，获得 $${payload.bonusAmount}`);
   });
 
   socket.on('START_LANDED', (payload: StartLandedPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const total = payload.passBonusAmount + payload.landBonusAmount;
-    eventLogStore.push('info', `${name} 停在起点，获得 $${total}`);
+    eventLogStore.push('positive', `${name} 停在起点，获得 $${total}`);
   });
 
   socket.on('TILE_EVENT', (payload: TileEventPayload) => {
     gameStore.setCurrentTurnPlayerId(payload.playerId);
     gameStore.setCurrentPhase(payload.phase);
     gameStore.setAvailableActions(payload.availableActions);
+    gameStore.setPendingTaxAmount(payload.taxAmount ?? null);
 
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
@@ -230,10 +232,20 @@ export const registerSocketListeners = (socket: Socket): void => {
   socket.on('RENT_CHARGED', (payload: RentChargedPayload) => {
     const fromPlayer = playersStore.players[payload.from];
     const fromName = fromPlayer?.nickname ?? payload.from;
-    eventLogStore.push('warn', `${fromName} 向 ${payload.to} 支付租金 $${payload.amount}`);
+    const toPlayer = playersStore.players[payload.to];
+    const toName = toPlayer?.nickname ?? payload.to;
+    // Payer sees red, recipient sees gold
+    if (payload.from === selfStore.id) {
+      eventLogStore.push('warn', `${fromName} → ${toName} 租金 $${payload.amount}`);
+    } else if (payload.to === selfStore.id) {
+      eventLogStore.push('positive', `${fromName} → ${toName} 租金 $${payload.amount}`);
+    } else {
+      eventLogStore.push('info', `${fromName} → ${toName} 租金 $${payload.amount}`);
+    }
   });
 
   socket.on('TAX_PAID', (payload: TaxPaidPayload) => {
+    gameStore.setPendingTaxAmount(null);
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     eventLogStore.push('warn', `${name} 缴税 $${payload.amount}`);
@@ -479,7 +491,7 @@ export const registerSocketListeners = (socket: Socket): void => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const seconds = Math.ceil(payload.rescueWindowMs / 1000);
-    eventLogStore.push('warn', `${name} 陷入濒死！${seconds} 秒内自救或宣告破产`);
+    eventLogStore.push('error', `${name} 陷入濒死！${seconds} 秒内自救或宣告破产`);
   });
 
   socket.on('PLAYER_RESCUED', (payload: PlayerRescuedPayload) => {
@@ -521,7 +533,7 @@ export const registerSocketListeners = (socket: Socket): void => {
     const msg = creditor
       ? `${name} 破产，资产转移给 ${creditor}`
       : `${name} 宣告破产，资产归还银行`;
-    eventLogStore.push('warn', msg);
+    eventLogStore.push('error', msg);
   });
 
   socket.on('WHALE_FALL', (payload: WhaleFallPayload) => {
