@@ -40,9 +40,9 @@
               :status-line="centerStatusLine"
               :description="centerDescription"
               :current-player-color="currentPlayerColor"
-              :active-tile-name="activeTile?.name ?? null"
-              :active-tile-type="activeTileTypeLabel"
-              :active-tile-price="activeTile?.basePrice ?? null"
+              :active-tile-name="isCasinoBetting ? null : (activeTile?.name ?? null)"
+              :active-tile-type="isCasinoBetting ? null : activeTileTypeLabel"
+              :active-tile-price="isCasinoBetting ? null : (activeTile?.basePrice ?? null)"
             >
               <template #pills>
                 <EventLogStream />
@@ -54,10 +54,6 @@
                     <button class="pill pill--primary" type="button" @click="rollDice">🎲 Roll Dice</button>
                   </div>
 
-                  <div v-if="isMyTurn && gameStore.availableActions.includes('PLACE_BET')" class="input-row">
-                    <input v-model.number="casinoBetAmount" type="number" min="0" class="pill-input" placeholder="Bet amount" />
-                    <button class="pill pill--primary" type="button" @click="handlePlaceBet">Place Bet</button>
-                  </div>
 
                   <div v-if="isMyTurn && contextualActions.length > 0" class="button-row">
                     <button
@@ -76,7 +72,7 @@
                   </div>
 
                   <div
-                    v-if="isMyTurn && !actionTaken && gameStore.currentPhase === 'EVENT_TRIGGER' && contextualActions.length === 0 && !gameStore.availableActions.includes('PLACE_BET')"
+                    v-if="isMyTurn && !actionTaken && gameStore.currentPhase === 'EVENT_TRIGGER' && contextualActions.length === 0 && !gameStore.availableActions.includes('CASINO_BET')"
                     class="button-row"
                   >
                     <button
@@ -160,6 +156,24 @@
                     </div>
                   </div>
                   <p v-else class="muted-note">No properties are currently eligible for construction.</p>
+                </section>
+
+                <section v-if="isCasinoBetting" class="detail-card detail-card--casino">
+                  <div class="casino-top-row">
+                    <button class="pill pill--soft casino-skip-btn" type="button" @click="handleCasinoSkip">Skip</button>
+                  </div>
+                  <p class="casino-hint">Small bets → high multiplier &amp; high risk. Large bets → safer odds, smaller return. Must be a multiple of ${{ activeTile?.betMultiple ?? 50 }}.</p>
+                  <div class="input-row">
+                    <input
+                      v-model.number="casinoBetAmount"
+                      type="number"
+                      :min="activeTile?.betMultiple ?? 50"
+                      :step="activeTile?.betMultiple ?? 50"
+                      class="pill-input"
+                      placeholder="Custom bet..."
+                    />
+                    <button class="pill pill--primary" type="button" :disabled="casinoBetPlaced" @click="handlePlaceBet">Place Bet</button>
+                  </div>
                 </section>
 
                 <section v-if="gameStore.activeAuction" class="detail-card detail-card--auction">
@@ -309,6 +323,7 @@ const session = ref(readStoredSocketSession());
 const casinoBetAmount = ref(0);
 const auctionBidAmount = ref(0);
 const actionTaken = ref(false);
+const casinoBetPlaced = ref(false);
 const floatingTextStore = useFloatingTextStore();
 
 const triggerFloatingTax = (): void => {
@@ -444,6 +459,8 @@ const centerDescription = computed(() => {
   if (isMyTurn.value && gameStore.currentPhase === 'END_TURN_PENDING') return 'Your move is resolved. End the turn when you are ready.';
   if (isMyTurn.value && gameStore.currentPhase === 'EVENT_TRIGGER' && activeTile.value?.type === 'TAX' && gameStore.pendingTaxAmount)
     return `Tax Event! You must pay $${gameStore.pendingTaxAmount} to continue.`;
+  if (isMyTurn.value && gameStore.currentPhase === 'EVENT_TRIGGER' && activeTile.value?.type === 'CASINO')
+    return '';
   return isMyTurn.value
     ? `Your turn is active. The board is currently in the ${turnPhaseLabel.value.toLowerCase()} phase.`
     : `${currentPlayerLabel.value} is currently handling the ${turnPhaseLabel.value.toLowerCase()} phase.`;
@@ -501,8 +518,37 @@ const emptyBoardDescription = computed(() => {
   return 'Player state is already hydrating from the live stores while the map syncs.';
 });
 
+const isCasinoBetting = computed(() =>
+  isMyTurn.value && gameStore.currentPhase === 'EVENT_TRIGGER' && gameStore.availableActions.includes('CASINO_BET'),
+);
+
+const casinoPresets = computed((): number[] => {
+  if (!activeTile.value || activeTile.value.type !== 'CASINO') return [];
+  const step = activeTile.value.betMultiple ?? 50;
+  const max = activeTile.value.maxBet ?? Infinity;
+  return [step, step * 2, step * 4, step * 10, step * 20, step * 100].filter((p) => p <= max);
+});
+
+const isBetValid = computed(() => {
+  if (!activeTile.value || activeTile.value.type !== 'CASINO') return false;
+  const step = activeTile.value.betMultiple ?? 50;
+  return casinoBetAmount.value > 0 && casinoBetAmount.value % step === 0;
+});
+
 const handlePlaceBet = (): void => {
-  if (casinoBetAmount.value > 0) placeCasinoBet(casinoBetAmount.value);
+  if (casinoBetPlaced.value) return;
+  const step = activeTile.value?.betMultiple ?? 50;
+  if (casinoBetAmount.value <= 0 || casinoBetAmount.value % step !== 0) {
+    eventLogStore.push('error', `Bet rejected: amount must be a positive multiple of $${step}.`);
+    return;
+  }
+  casinoBetPlaced.value = true;
+  placeCasinoBet(casinoBetAmount.value);
+  casinoBetAmount.value = 0;
+};
+
+const handleCasinoSkip = (): void => {
+  skipPurchase();
 };
 
 const handlePlaceAuctionBid = (): void => {
@@ -548,7 +594,7 @@ const handleClearSession = async (): Promise<void> => {
 
 watch(
   [() => gameStore.currentTurnPlayerId, () => gameStore.turnNumber, () => gameStore.currentPhase],
-  () => { actionTaken.value = false; },
+  () => { actionTaken.value = false; casinoBetPlaced.value = false; },
 );
 
 const onActionRejected = (): void => { actionTaken.value = false; };
@@ -628,6 +674,18 @@ onBeforeUnmount(() => {
   font-weight: 500;
   color: #26180d;
 }
+.detail-card--casino { background: linear-gradient(180deg, rgba(255, 242, 200, 0.88), rgba(255, 220, 130, 0.78)); border: 1px solid rgba(184, 121, 58, 0.25); }
+.casino-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.casino-stats div { display: grid; gap: 4px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.55); }
+.casino-stats span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #8f5d23; }
+.casino-stats strong { font-size: 1.05rem; color: #26180d; font-weight: 700; }
+.casino-top-row { display: flex; justify-content: flex-end; }
+.casino-skip-btn { min-height: 32px; padding: 5px 16px; font-size: 0.82rem; }
+.casino-hint { margin: 0; font-size: 0.76rem; color: #7b5a23; font-style: italic; line-height: 1.5; }
+.casino-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.casino-chip { padding: 7px 15px; border-radius: 999px; border: 2px solid rgba(184, 121, 58, 0.35); background: rgba(255, 255, 255, 0.72); font-family: 'Itim', cursive; font-size: 0.9rem; font-weight: 400; color: #8f5d23; cursor: pointer; transition: background 120ms, border-color 120ms, color 120ms; }
+.casino-chip:hover { background: rgba(184, 121, 58, 0.18); border-color: rgba(184, 121, 58, 0.65); }
+.casino-chip--active { background: #b8793a; border-color: #b8793a; color: #fff; }
 @media (max-width: 1080px) { .game-scene { --drawer-width: 320px; } .auction-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .game-scene { --board-size: min(calc(100vw - 24px), calc(100vh - 24px)); } .game-scene.drawer-open .board-wrapper { transform: translate(-50%, -50%); } .side-drawer { width: min(100vw, 420px); } .game-scene.drawer-open .drawer-toggle { right: min(100vw, 420px); } }
 @media (max-width: 720px) { .game-scene { --board-size: calc(100vw - 16px); } .drawer-toggle { top: auto; bottom: 80px; right: 0; transform: none; border-radius: 12px 0 0 12px; } .game-scene.drawer-open .drawer-toggle { right: 100vw; } .side-drawer { width: 100vw; padding: 18px 16px 24px; } .stats-grid { grid-template-columns: 1fr; } .button-row, .input-row { flex-direction: column; align-items: stretch; } }

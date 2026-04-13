@@ -37,7 +37,8 @@
             v-for="tile in selfOwnedTiles"
             :key="tile.id"
             class="tile-btn"
-            :class="{ 'tile-btn--active': proposerTileIds.includes(tile.id) }"
+            :class="{ 'tile-btn--active': proposerTileIds.includes(tile.id), 'tile-btn--mortgaged': tile.isMortgaged }"
+            :title="tile.isMortgaged ? 'Mortgaged' : undefined"
             type="button"
             @click="toggleTile(proposerTileIds, tile.id)"
           >
@@ -56,7 +57,8 @@
             v-for="tile in responderOwnedTiles"
             :key="tile.id"
             class="tile-btn"
-            :class="{ 'tile-btn--active': responderTileIds.includes(tile.id) }"
+            :class="{ 'tile-btn--active': responderTileIds.includes(tile.id), 'tile-btn--mortgaged': tile.isMortgaged }"
+            :title="tile.isMortgaged ? 'Mortgaged' : undefined"
             type="button"
             @click="toggleTile(responderTileIds, tile.id)"
           >
@@ -367,6 +369,20 @@ const submitPropose = (): void => {
   background: #1f1a14;
   border-color: #1f1a14;
   color: #fff7ed;
+}
+
+.tile-btn--mortgaged {
+  background: rgba(160, 160, 160, 0.25);
+  border-color: rgba(100, 100, 100, 0.3);
+  color: #666;
+  opacity: 0.78;
+}
+
+.tile-btn--active.tile-btn--mortgaged {
+  background: #1f1a14;
+  border-color: #1f1a14;
+  color: #fff7ed;
+  opacity: 1;
 }
 
 .player-btn {

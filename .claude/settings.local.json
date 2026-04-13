@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Read(//Users/**)",
-      "Read(//c/Users/Terry/**)"
+      "Read(//c/Users/Terry/**)",
+      "Bash(npm install:*)",
+      "Bash(xargs basename:*)",
+      "Bash(\"D:/MyPythonScripts/.venv_ppt/Scripts/python\" -)"
     ]
   }
 }

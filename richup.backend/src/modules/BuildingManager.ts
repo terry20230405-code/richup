@@ -154,6 +154,24 @@ export function sellBuilding(
 
   if (tile.buildingLevel === 0) throw new RuleViolationError('No buildings to sell');
 
+  // Even-building rule for downgrade: must sell from the highest-level property first.
+  {
+    const groupTiles = session.board.filter(
+      (t): t is PropertyTile =>
+        t.type === TileType.PROPERTY &&
+        (t as PropertyTile).colorGroup === tile.colorGroup &&
+        (t as PropertyTile).ownerId === playerId,
+    );
+    if (groupTiles.length > 0) {
+      const maxLevel = Math.max(...groupTiles.map(t => t.buildingLevel));
+      if (tile.buildingLevel < maxLevel) {
+        throw new RuleViolationError(
+          `Even-building rule: must sell buildings from the most-developed property first`,
+        );
+      }
+    }
+  }
+
   const refund = Math.floor(tile.buildCost * session.config.buildingRefundRate) as Money;
   tile.buildingLevel--;
 

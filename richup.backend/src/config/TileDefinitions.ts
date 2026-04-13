@@ -35,15 +35,15 @@ const JAIL_TILE: JailTile = {
   type: TileType.JAIL,
 };
 
-const BASE_AIRPORT_RENT = 0;
+const BASE_AIRPORT_RENT = 30;
 
 function makeAirport(id: number, name: string): AirportTile {
   return {
     id,
     name,
     type: TileType.AIRPORT,
-    basePrice: 200,
-    mortgageValue: 100,
+    basePrice: 250,
+    mortgageValue: 125,
     isMortgaged: false,
     ownerId: null,
     rentTable: [

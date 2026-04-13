@@ -3,19 +3,12 @@
     <!-- Full-screen transparent backdrop: click anywhere outside closes the popover -->
     <div class="tp-backdrop" @click="close" />
 
-    <article class="tp-card" :style="floatingStyle" @click.stop>
+    <article ref="floatingEl" class="tp-card" :style="floatingStyles" @click.stop>
 
       <!-- ── Header ──────────────────────────────────────────── -->
       <header class="tp-header">
-        <div v-if="colorHex" class="tp-color-pip" :style="{ background: colorHex }" />
-        <div class="tp-header-body">
-          <h3 class="tp-name">{{ displayName }}</h3>
-        </div>
-        <button class="tp-close-btn" type="button" aria-label="Close popover" @click="close">✕</button>
+        <h3 class="tp-name">{{ displayName }}</h3>
       </header>
-
-      <!-- ── Mortgaged badge ───────────────────────────────────── -->
-      <span v-if="tile.isMortgaged" class="tp-badge tp-badge--warn">Mortgaged</span>
 
       <!-- ── PROPERTY ────────────────────────────────────────── -->
       <template v-if="tile.type === 'PROPERTY'">
@@ -23,21 +16,27 @@
           <span>Base Price</span>
           <strong>${{ tile.basePrice ?? '—' }}</strong>
         </div>
-        <div v-if="tile.mortgageValue" class="tp-stat-row">
-          <span>Mortgage Value</span>
+        <div v-if="tile.mortgageValue != null" class="tp-stat-row">
+          <span>Mortgage Price</span>
           <strong>${{ tile.mortgageValue }}</strong>
+        </div>
+        <div v-if="tile.buildCost != null" class="tp-stat-row">
+          <span>Upgrade Price</span>
+          <strong>${{ tile.buildCost }}</strong>
         </div>
 
         <div v-if="rentRows.length" class="tp-section">
           <p class="tp-section-title">Rent Schedule</p>
-          <div
-            v-for="row in rentRows"
-            :key="row.label"
-            class="tp-rent-row"
-            :class="{ 'tp-rent-row--current': row.current }"
-          >
-            <span>{{ row.label }}</span>
-            <strong>${{ row.amount }}</strong>
+          <div class="tp-rent-list">
+            <div
+              v-for="row in rentRows"
+              :key="row.label"
+              class="tp-rent-row"
+              :class="{ 'tp-rent-row--current': row.current }"
+            >
+              <span>{{ row.label }}</span>
+              <strong>${{ row.amount }}</strong>
+            </div>
           </div>
         </div>
       </template>
@@ -48,19 +47,22 @@
           <span>Base Price</span>
           <strong>${{ tile.basePrice ?? '—' }}</strong>
         </div>
-        <div v-if="tile.mortgageValue" class="tp-stat-row">
-          <span>Mortgage Value</span>
-          <strong>${{ tile.mortgageValue }}</strong>
-        </div>
         <div v-if="tile.passThruToll" class="tp-stat-row">
           <span>Pass-thru Toll</span>
           <strong>${{ tile.passThruToll }}</strong>
         </div>
         <div v-if="tile.rentTable?.length" class="tp-section">
           <p class="tp-section-title">Toll by Network Size</p>
-          <div v-for="(toll, i) in tile.rentTable" :key="i" class="tp-rent-row">
-            <span>{{ i + 1 }} Airport{{ i > 0 ? 's' : '' }}</span>
-            <strong>${{ toll }}</strong>
+          <div class="tp-rent-list">
+            <div
+              v-for="(toll, i) in tile.rentTable"
+              :key="i"
+              class="tp-rent-row"
+              :class="{ 'tp-rent-row--current': tile.ownerId != null && i === ownerAirportCount - 1 }"
+            >
+              <span>{{ i + 1 }} Airport{{ i > 0 ? 's' : '' }}</span>
+              <strong>${{ toll }}</strong>
+            </div>
           </div>
         </div>
       </template>
@@ -107,7 +109,7 @@
             type="button"
             @click="handleUpgrade"
           >
-            Upgrade
+            Upgrade (${{ tile.buildCost ?? '?' }})
           </button>
           <button
             v-if="(tile.buildingLevel ?? 0) > 0"
@@ -148,7 +150,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useFloating, offset, shift } from '@floating-ui/vue';
+import type { Placement } from '@floating-ui/vue';
 
 import type { TilePublicView } from '@/types';
 import type { TileSide } from './BoardView.vue';
@@ -184,80 +188,48 @@ const onKeydown = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
 onMounted(()  => document.addEventListener('keydown', onKeydown));
 onUnmounted(() => document.removeEventListener('keydown', onKeydown));
 
-// ── Floating position ────────────────────────────────────────────────
-// Strategy: position: fixed + getBoundingClientRect.
-// Direction is derived from the `side` prop (already known from the grid layout).
-// Corners open toward the viewport center.
-const GAP = 10; // px gap between tile edge and popover
+// ── Floating UI positioning ──────────────────────────────────────────
 
-const floatingStyle = computed(() => {
-  const r = props.anchorRect;
+const floatingEl = ref<HTMLElement | null>(null);
+
+/** Virtual reference element wrapping the anchor DOMRect captured at click time. */
+const virtualRef = computed(() => ({
+  getBoundingClientRect: () => props.anchorRect,
+}));
+
+/** Map tile side → Floating UI placement so the popover opens toward the board center. */
+const floatingPlacement = computed((): Placement => {
   const s = props.side;
-
-  if (s === 'top') {
-    // Tile is on the top row → popover opens downward, horizontally centered
-    return {
-      top:       `${r.bottom + GAP}px`,
-      left:      `${r.left + r.width / 2}px`,
-      transform: 'translateX(-50%)',
-    };
-  }
-  if (s === 'bottom') {
-    // Tile is on the bottom row → popover opens upward, horizontally centered
-    return {
-      top:       `${r.top - GAP}px`,
-      left:      `${r.left + r.width / 2}px`,
-      transform: 'translateX(-50%) translateY(-100%)',
-    };
-  }
-  if (s === 'left') {
-    // Tile is on the left column → popover opens to the right, vertically centered
-    return {
-      top:       `${r.top + r.height / 2}px`,
-      left:      `${r.right + GAP}px`,
-      transform: 'translateY(-50%)',
-    };
-  }
-  if (s === 'right') {
-    // Tile is on the right column → popover opens to the left, vertically centered
-    return {
-      top:       `${r.top + r.height / 2}px`,
-      left:      `${r.left - GAP}px`,
-      transform: 'translateX(-100%) translateY(-50%)',
-    };
-  }
-
+  if (s === 'top')    return 'bottom';
+  if (s === 'bottom') return 'top';
+  if (s === 'left')   return 'right';
+  if (s === 'right')  return 'left';
   // corner: open diagonally toward the viewport center
+  const r = props.anchorRect;
   const goRight = r.left < window.innerWidth  / 2;
   const goDown  = r.top  < window.innerHeight / 2;
-  const tx = goRight ? ''                : 'translateX(-100%)';
-  const ty = goDown  ? ''                : 'translateY(-100%)';
-  return {
-    top:       goDown  ? `${r.bottom + GAP}px` : `${r.top  - GAP}px`,
-    left:      goRight ? `${r.right  + GAP}px` : `${r.left - GAP}px`,
-    transform: [tx, ty].filter(Boolean).join(' ') || 'none',
-  };
+  if (goRight && goDown)  return 'bottom-start';
+  if (goRight && !goDown) return 'top-start';
+  if (!goRight && goDown) return 'bottom-end';
+  return 'top-end';
 });
 
-// ── Display helpers ──────────────────────────────────────────────────
+const { floatingStyles } = useFloating(virtualRef, floatingEl, {
+  placement: floatingPlacement,
+  middleware: [
+    offset(10),
+    shift({ padding: 12 }),
+  ],
+  strategy: 'fixed',
+});
 
-const GROUP_COLORS: Record<string, string> = {
-  BROWN:      '#8B4513',
-  LIGHT_BLUE: '#87CEEB',
-  PINK:       '#FF69B4',
-  ORANGE:     '#FFA500',
-  RED:        '#FF0000',
-  YELLOW:     '#FFD700',
-  GREEN:      '#008000',
-  DARK_BLUE:  '#00008B',
-  PURPLE:     '#800080',
-  TEAL:       '#008080',
-  GRAY:       '#808080',
-};
-
-const colorHex = computed(() =>
-  props.tile.colorGroup ? (GROUP_COLORS[props.tile.colorGroup] ?? null) : null,
-);
+// ── Airport: owner's current airport count (for toll highlight) ───────
+const ownerAirportCount = computed(() => {
+  if (props.tile.type !== 'AIRPORT' || props.tile.ownerId == null) return 0;
+  return gameStore.board.filter(
+    (t) => t.type === 'AIRPORT' && t.ownerId === props.tile.ownerId && !t.isMortgaged,
+  ).length;
+});
 
 // ── Rent table (PROPERTY only) ───────────────────────────────────────
 interface RentRow { label: string; amount: number; current: boolean }
@@ -285,9 +257,9 @@ const rentRows = computed((): RentRow[] => {
 
 // ── Special tile descriptions ────────────────────────────────────────
 const SPECIAL_DESC: Record<string, string> = {
-  TAX:        'Pay a fixed tax to the bank when you land here.',
+  TAX:        'Pay a random tax rate of 5% to 15% when you land here.',
   SURPRISE:   'Draw a random event card — fortune or misfortune awaits.',
-  GO:         'Pass to collect your pass-go bonus each lap.',
+  GO:         'Pass to collect your pass-go bonus each lap.\nExtra bonus if you land exactly here.',
   JAIL:       'Visiting only — no penalty unless you are jailed.',
   GO_TO_JAIL: 'Land here and go directly to jail. Do not pass Go.',
   FREE:       'A safe haven — no rent, no fines, just rest.',
@@ -296,8 +268,6 @@ const SPECIAL_DESC: Record<string, string> = {
 const specialDescription = computed(() => SPECIAL_DESC[props.tile.type] ?? 'Special tile.');
 
 // ── Build actions ────────────────────────────────────────────────────
-// Shown only when: current player owns ALL tiles in the color group (monopoly)
-// AND the game is currently in BUILD_PHASE for that player.
 const hasMonopoly = computed(() => {
   if (props.tile.type !== 'PROPERTY' || !props.tile.colorGroup) return false;
   if (props.tile.ownerId !== selfStore.id) return false;
@@ -379,24 +349,10 @@ const handleUnmortgage = () => {
 .tp-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.tp-color-pip {
-  width: 10px;
-  height: 38px;
-  border-radius: 999px;
-  flex-shrink: 0;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
-}
-
-.tp-header-body {
-  flex: 1;
-  min-width: 0;
 }
 
 .tp-name {
-  margin: 2px 0 0;
+  margin: 0;
   font-family: 'Itim', cursive;
   font-size: 1.05rem;
   font-weight: 400;
@@ -406,23 +362,6 @@ const handleUnmortgage = () => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-.tp-close-btn {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 999px;
-  background: rgba(92, 66, 41, 0.1);
-  color: #8f5d23;
-  font-size: 0.68rem;
-  cursor: pointer;
-  transition: background 150ms;
-}
-.tp-close-btn:hover { background: rgba(92, 66, 41, 0.22); }
 
 /* ── Stat rows ─────────────────────────────────────────────────── */
 .tp-stat-row {
@@ -450,6 +389,30 @@ const handleUnmortgage = () => {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #8f5d23;
+}
+
+/* ── Rent list: scrollable with CSS fallback ───────────────────── */
+.tp-rent-list {
+  display: grid;
+  gap: 3px;
+  max-height: 50vh;
+  overflow-y: auto;
+  /* Custom scrollbar — thin & translucent */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 93, 35, 0.28) transparent;
+}
+.tp-rent-list::-webkit-scrollbar {
+  width: 4px;
+}
+.tp-rent-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tp-rent-list::-webkit-scrollbar-thumb {
+  background: rgba(139, 93, 35, 0.28);
+  border-radius: 999px;
+}
+.tp-rent-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 93, 35, 0.50);
 }
 
 /* ── Rent rows ─────────────────────────────────────────────────── */
@@ -491,6 +454,7 @@ const handleUnmortgage = () => {
   font-size: 0.82rem;
   line-height: 1.55;
   color: #5c4432;
+  white-space: pre-line;
 }
 
 /* ── Build actions ─────────────────────────────────────────────── */

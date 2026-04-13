@@ -29,8 +29,9 @@
       <!-- 1. Outer edge: Price zone -->
       <div class="tile-price-zone">
         <div class="price-content">
-          <!-- AIRPORT: always show price -->
-          <span v-if="tile.type === 'AIRPORT' && tile.basePrice != null" class="tile-price">${{ tile.basePrice }}</span>
+          <!-- AIRPORT: show current toll when owned, base price when unowned -->
+          <span v-if="tile.type === 'AIRPORT' && currentAirportToll != null" class="tile-price tile-price--toll">${{ currentAirportToll }}</span>
+          <span v-else-if="tile.type === 'AIRPORT' && tile.basePrice != null" class="tile-price">${{ tile.basePrice }}</span>
 
           <!-- PROPERTY level 0: show price -->
           <span
@@ -91,6 +92,9 @@
       </div>
     </template>
 
+    <!-- Mortgaged overlay -->
+    <div v-if="tile.isMortgaged" class="tile-mortgaged-overlay" aria-hidden="true" />
+
     <!-- Floating text (e.g. tax deduction) -->
     <FloatingText v-if="activeFloatingText" :text="activeFloatingText.text" />
 
@@ -115,6 +119,7 @@ import FloatingText from './FloatingText.vue';
 import TilePopover from './TilePopover.vue';
 import { useFloatingTextStore } from '@/stores/useFloatingTextStore';
 import { useTileSelection } from '@/composables/useTileSelection';
+import { useGameStore } from '@/stores/useGameStore';
 
 interface TilePlayerToken {
   id: string;
@@ -131,6 +136,7 @@ const props = defineProps<{
 }>();
 
 const floatingTextStore = useFloatingTextStore();
+const gameStore = useGameStore();
 const activeFloatingText = computed(() =>
   floatingTextStore.texts.find((t) => t.tilePosition === props.tile.id) ?? null,
 );
@@ -293,6 +299,14 @@ const tileIcon = computed(() => TILE_ICONS[props.tile.type] ?? '');
 
 const cornerIcon = computed(() => CORNER_ICONS[props.tile.type] ?? '★');
 
+const currentAirportToll = computed(() => {
+  if (props.tile.type !== 'AIRPORT' || props.tile.ownerId == null || !props.tile.rentTable) return null;
+  const airportCount = gameStore.board.filter(
+    (t) => t.type === 'AIRPORT' && t.ownerId === props.tile.ownerId && !t.isMortgaged,
+  ).length;
+  return props.tile.rentTable[airportCount - 1] ?? null;
+});
+
 </script>
 
 <style scoped>
@@ -348,6 +362,11 @@ const cornerIcon = computed(() => CORNER_ICONS[props.tile.type] ?? '★');
   font-weight: 400;
   color: #4a3520;
   line-height: 1;
+}
+
+.tile-price--toll {
+  font-weight: 700;
+  color: #FF0000;
 }
 
 .building-indicator {
@@ -598,6 +617,21 @@ const cornerIcon = computed(() => CORNER_ICONS[props.tile.type] ?? '★');
 /* Subtle hover highlight so tiles feel interactive */
 .tile-card:hover {
   filter: brightness(1.04);
+}
+
+/* ── Mortgaged overlay ──────────────────────────────────────────── */
+.tile-mortgaged-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border-radius: inherit;
+  background: rgba(20, 20, 20, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.3s ease;
 }
 
 /* ── Responsive ─────────────────────────────────────────────────── */

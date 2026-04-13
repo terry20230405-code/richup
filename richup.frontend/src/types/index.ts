@@ -60,6 +60,7 @@ export interface TilePublicView {
   mortgageValue?: number;
   ownerId?: PlayerId | null;
   buildingLevel?: number;
+  buildCost?: number;
   isMortgaged?: boolean;
   isLit?: boolean;
   baseRent?: number;
