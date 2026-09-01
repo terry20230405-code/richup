@@ -8,12 +8,14 @@
  *  - Temple can only be "lit" once per game
  */
 import type { Server } from 'socket.io';
-import type { PlayerId, TileId } from '../types/Common.types';
+import type { PlayerId, TileId, Money } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
 export interface TempleEventResult {
     ownerPrayed: boolean;
     propCardDrawn: boolean;
     rentCharged: boolean;
+    requiresRescue: boolean;
+    amountOwed: Money;
 }
 /**
  * Handle a player landing on a temple tile.

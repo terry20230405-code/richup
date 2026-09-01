@@ -22,20 +22,20 @@ const logger_1 = require("../utils/logger");
 function buildCardPool() {
     return [
         // Cash gains (placeholder amounts)
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 1000, description: '获得奖励金 1000' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 2000, description: '获得奖励金 2000' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 500, description: '获得奖励金 500' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 3000, description: '获得奖励金 3000' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 1000, description: 'Receive a $1000 bonus' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 2000, description: 'Receive a $2000 bonus' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 500, description: 'Receive a $500 bonus' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_GAIN, amount: 3000, description: 'Receive a $3000 bonus' },
         // Cash losses (placeholder amounts)
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_LOSS, amount: 500, description: '支付罚款 500' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_LOSS, amount: 1000, description: '支付罚款 1000' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_LOSS, amount: 2000, description: '支付维修费 2000' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_LOSS, amount: 500, description: 'Pay a $500 fine' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_LOSS, amount: 1000, description: 'Pay a $1000 fine' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.CASH_LOSS, amount: 2000, description: 'Pay $2000 in repair costs' },
         // Prop card draws
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.PROP_CARD, amount: 0, description: '获得一张道具卡' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.PROP_CARD, amount: 0, description: '获得一张道具卡' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.PROP_CARD, amount: 0, description: 'Draw a prop card' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.PROP_CARD, amount: 0, description: 'Draw a prop card' },
         // Rampage (extra roll)
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.RAMPAGE, amount: 0, description: '狂奔！再掷一次骰子' },
-        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.RAMPAGE, amount: 0, description: '狂奔！再掷一次骰子' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.RAMPAGE, amount: 0, description: 'Rampage! Roll the dice again' },
+        { id: (0, uuid_1.v4)(), type: GameSession_types_1.SurpriseCardType.RAMPAGE, amount: 0, description: 'Rampage! Roll the dice again' },
     ];
 }
 /** Create a freshly shuffled surprise deck for a new game. */
@@ -74,7 +74,12 @@ function randomPropCardType() {
 function applySurpriseCard(session, playerId, io) {
     const card = drawCard(session);
     session.surpriseDiscardPile.push(card);
-    const result = { rampage: false, propCardDrawn: false };
+    const result = {
+        rampage: false,
+        propCardDrawn: false,
+        requiresRescue: false,
+        amountOwed: 0,
+    };
     switch (card.type) {
         case GameSession_types_1.SurpriseCardType.CASH_GAIN: {
             (0, GameSession_1.cashChange)(session, playerId, card.amount, 'SURPRISE_GAIN', io);
@@ -87,7 +92,14 @@ function applySurpriseCard(session, playerId, io) {
             break;
         }
         case GameSession_types_1.SurpriseCardType.CASH_LOSS: {
-            (0, GameSession_1.cashChange)(session, playerId, -card.amount, 'SURPRISE_LOSS', io);
+            const player = (0, GameSession_1.requirePlayer)(session, playerId);
+            if (player.cash >= card.amount) {
+                (0, GameSession_1.cashChange)(session, playerId, -card.amount, 'SURPRISE_LOSS', io);
+            }
+            else {
+                result.requiresRescue = true;
+                result.amountOwed = card.amount;
+            }
             const payload = {
                 playerId,
                 cashDelta: -(card.amount),
@@ -102,6 +114,7 @@ function applySurpriseCard(session, playerId, io) {
             const player = session.players.get(playerId);
             if (player) {
                 player.propCards.push({ id: (0, uuid_1.v4)(), type: propCardType, acquiredAt: Date.now() });
+                (0, GameSession_1.syncPropCards)(session, playerId, io);
             }
             // Broadcast: only reveal WHO drew, not what type
             const drawnPayload = { playerId };

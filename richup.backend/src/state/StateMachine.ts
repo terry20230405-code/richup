@@ -23,7 +23,9 @@ const VALID_TRANSITIONS: ReadonlyMap<TurnPhase, ReadonlySet<TurnPhase>> = new Ma
   ],
   [
     TurnPhase.ROLLING_DICE,
-    new Set([TurnPhase.MOVING, TurnPhase.JAIL_DECISION, TurnPhase.WAITING_FOR_ACTION]),
+    // END_TURN_PENDING: rolled but no move happens (sent to jail on 3rd double,
+    // or failed the jail-escape roll) — turn ends immediately.
+    new Set([TurnPhase.MOVING, TurnPhase.JAIL_DECISION, TurnPhase.WAITING_FOR_ACTION, TurnPhase.END_TURN_PENDING]),
   ],
   [
     TurnPhase.MOVING,
@@ -40,15 +42,11 @@ const VALID_TRANSITIONS: ReadonlyMap<TurnPhase, ReadonlySet<TurnPhase>> = new Ma
   ],
   [
     TurnPhase.AUCTION_IN_PROGRESS,
-    new Set([TurnPhase.END_TURN_PENDING, TurnPhase.DYING_RESCUE]),
-  ],
-  [
-    TurnPhase.BUILD_PHASE,
-    new Set([TurnPhase.END_TURN_PENDING]),
+    new Set([TurnPhase.END_TURN_PENDING, TurnPhase.WAITING_FOR_ACTION, TurnPhase.DYING_RESCUE]),
   ],
   [
     TurnPhase.JAIL_DECISION,
-    new Set([TurnPhase.ROLLING_DICE, TurnPhase.END_TURN_PENDING, TurnPhase.MOVING]),
+    new Set([TurnPhase.ROLLING_DICE, TurnPhase.END_TURN_PENDING, TurnPhase.MOVING, TurnPhase.WAITING_FOR_ACTION]),
   ],
   [
     TurnPhase.DYING_RESCUE,

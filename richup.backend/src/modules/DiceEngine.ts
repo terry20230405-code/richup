@@ -9,12 +9,18 @@ import type { Server } from 'socket.io';
 import type { PlayerId } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
 import type { S2C_DiceRolled, S2C_DiceOverride } from '../types/Events.types';
-import { BOARD_CONFIG } from '../config/GameConfig';
 import { rollDice } from '../utils/randomUtils';
 import { broadcastToRoom } from '../socket/emitters/broadcast';
 import { logger } from '../utils/logger';
+import { voidTradesInvolvingPlayer } from './TradeLifecycle';
+import { TradeVoidReason } from '../types/Trade.types';
 
 const MAX_CONSECUTIVE_DOUBLES = 3;
+const REMOTE_DICE_PAIRS: Record<5 | 6 | 7, [1 | 2 | 3 | 4 | 5 | 6, 1 | 2 | 3 | 4 | 5 | 6]> = {
+  5: [2, 3],
+  6: [1, 5],
+  7: [3, 4],
+};
 
 /** Track consecutive doubles per player per turn. Cleared on END_TURN. */
 const doublesTracker = new Map<string, number>(); // key: `${roomId}:${playerId}`
@@ -33,7 +39,14 @@ export function performRoll(
   playerId: PlayerId,
   io: Server,
 ): { die1: number; die2: number; isDouble: boolean; total: number; jailTriggered: boolean } {
-  const result = rollDice();
+  const override = session.remoteDiceOverride?.playerId === playerId
+    ? session.remoteDiceOverride
+    : null;
+  session.remoteDiceOverride = null;
+
+  const result = override
+    ? { die1: REMOTE_DICE_PAIRS[override.steps][0], die2: REMOTE_DICE_PAIRS[override.steps][1], isDouble: false, total: override.steps }
+    : rollDice();
   session.lastDiceRoll = result;
 
   const payload: S2C_DiceRolled = {
@@ -44,6 +57,7 @@ export function performRoll(
     totalSteps: result.total,
   };
   broadcastToRoom(io, session.id, 'DICE_ROLLED', payload);
+  voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_ROLLED, io);
   logger.debug({ roomId: session.id, playerId, ...result }, 'Dice rolled');
 
   // Track doubles
@@ -74,7 +88,7 @@ export function applyRemoteDice(
   steps: 5 | 6 | 7,
   io: Server,
 ): void {
-  session.lastDiceRoll = { die1: steps, die2: 0, isDouble: false, total: steps };
+  session.remoteDiceOverride = { playerId, steps };
   const payload: S2C_DiceOverride = { playerId, steps, source: 'REMOTE_DICE' };
   broadcastToRoom(io, session.id, 'DICE_OVERRIDE', payload);
 }
@@ -96,13 +110,6 @@ export function rollForJailDouble(
     totalSteps: result.total,
   };
   broadcastToRoom(io, session.id, 'DICE_ROLLED', payload);
+  voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_ROLLED, io);
   return { ...result, total: result.total, jailTriggered: false };
 }
-
-/** How many consecutive doubles the current player has rolled this turn. */
-export function getConsecutiveDoubles(roomId: string, playerId: PlayerId): number {
-  return doublesTracker.get(doublesKey(roomId, playerId)) ?? 0;
-}
-
-/** Position of the jail tile. */
-export const JAIL_POSITION = BOARD_CONFIG.FIXED_ANCHORS.JAIL;

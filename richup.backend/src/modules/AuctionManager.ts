@@ -16,6 +16,7 @@ import type { PlayerId, Money, TileId } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
 import { TurnPhase } from '../types/GameSession.types';
 import type { AuctionSession } from '../types/Auction.types';
+import { TileType } from '../types/Tile.types';
 import { AuctionStatus } from '../types/Auction.types';
 import type {
   S2C_AuctionStarted,
@@ -48,6 +49,14 @@ export function startAuction(
     throw new RuleViolationError('An auction is already in progress');
   }
 
+  const tile = session.board[tileId];
+  if (!tile || (tile.type !== TileType.PROPERTY && tile.type !== TileType.AIRPORT)) {
+    throw new RuleViolationError('Only property and airport tiles can be auctioned');
+  }
+  if (!('ownerId' in tile) || tile.ownerId !== null) {
+    throw new RuleViolationError('Only unowned tiles can be auctioned');
+  }
+
   const activePlayerIds = [...session.players.values()].filter(
     p => p.status === 'ACTIVE' || p.status === 'DISCONNECTED',
   );
@@ -71,8 +80,6 @@ export function startAuction(
 
   session.activeAuction = auction;
   StateMachine.transition(session, TurnPhase.AUCTION_IN_PROGRESS);
-
-  const tile = session.board[tileId];
 
   const payload: S2C_AuctionStarted = {
     auction: {
@@ -108,14 +115,14 @@ export function placeBid(
   const player = requirePlayer(session, bidderId);
 
   if (!auction.activePlayerIds.includes(bidderId)) {
-    emitToPlayer<S2C_AuctionBidRejected>(io, bidderId, 'AUCTION_BID_REJECTED', {
+    emitToPlayer(io, bidderId, 'AUCTION_BID_REJECTED', {
       reason: 'AUCTION_CLOSED',
     });
     return;
   }
 
   if (amount <= auction.currentBid) {
-    emitToPlayer<S2C_AuctionBidRejected>(io, bidderId, 'AUCTION_BID_REJECTED', {
+    emitToPlayer(io, bidderId, 'AUCTION_BID_REJECTED', {
       reason: 'BID_NOT_HIGHER',
       currentBid: auction.currentBid,
     });
@@ -123,7 +130,7 @@ export function placeBid(
   }
 
   if (player.cash < amount) {
-    emitToPlayer<S2C_AuctionBidRejected>(io, bidderId, 'AUCTION_BID_REJECTED', {
+    emitToPlayer(io, bidderId, 'AUCTION_BID_REJECTED', {
       reason: 'INSUFFICIENT_FUNDS',
       currentBid: auction.currentBid,
     });
@@ -177,10 +184,22 @@ export function passAuction(
   auction.activePlayerIds = auction.activePlayerIds.filter(id => id !== bidderId);
   auction.passedPlayerIds.push(bidderId);
 
+  if (auction.currentLeaderId === bidderId) {
+    // A bidder cannot pass and remain the winner. Release the bid lock and
+    // reset the auction so the remaining participants can bid again.
+    auction.currentLeaderId = null;
+    auction.currentBid = session.config.startingBid;
+    auction.lockedBid = 0;
+  }
+
   const payload: S2C_AuctionPlayerPassed = {
     auctionId: auction.id,
     passedPlayerId: bidderId,
     remainingActiveCount: auction.activePlayerIds.length,
+    activePlayerIds: [...auction.activePlayerIds],
+    passedPlayerIds: [...auction.passedPlayerIds],
+    currentLeaderId: auction.currentLeaderId,
+    currentBid: auction.currentBid,
   };
   broadcastToRoom(io, session.id, 'AUCTION_PLAYER_PASSED', payload);
 
@@ -200,8 +219,19 @@ export function resolveAuction(session: GameSession, io: Server): void {
   const auction = requireActiveAuction(session);
   cancelTimer(TimerNS.auctionRound(session.id));
 
+  // If the current leader passed, the last remaining participant wins at the
+  // current bid (which is reset to the configured starting bid by passAuction).
+  // This also handles a zero-value hammer down instead of incorrectly treating
+  // the auction as a no-sale.
+  if (!auction.currentLeaderId && auction.activePlayerIds.length === 1) {
+    auction.currentLeaderId = auction.activePlayerIds[0] ?? null;
+    auction.currentBid = session.config.startingBid;
+  }
+
   auction.status = AuctionStatus.RESOLVED;
   auction.lockedBid = 0;
+  auction.winnerId = auction.currentLeaderId;
+  auction.finalPrice = auction.currentLeaderId ? auction.currentBid : null;
 
   if (auction.currentLeaderId && auction.currentBid > 0) {
     // Hammer down — winner pays
@@ -243,13 +273,32 @@ export function resolveAuction(session: GameSession, io: Server): void {
     broadcastToRoom(io, session.id, 'AUCTION_HAMMER_DOWN', payload);
   } else {
     // No sale
+    auction.status = AuctionStatus.NO_SALE;
+    auction.winnerId = null;
+    auction.finalPrice = null;
     const payload: S2C_AuctionNoSale = { auctionId: auction.id, tileId: auction.tileId };
     broadcastToRoom(io, session.id, 'AUCTION_NO_SALE', payload);
     logger.info({ roomId: session.id }, 'Auction no sale');
   }
 
   session.activeAuction = null;
-  StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+  session.pendingTileEvent = null;
+  if (session.pendingExtraRoll) {
+    session.pendingExtraRoll = false;
+    StateMachine.transition(session, TurnPhase.WAITING_FOR_ACTION);
+    broadcastToRoom(io, session.id, 'TURN_READY', {
+      playerId: session.playerOrder[session.currentPlayerIndex],
+      phase: TurnPhase.WAITING_FOR_ACTION,
+      availableActions: ['ROLL_DICE'],
+    });
+  } else {
+    StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+    broadcastToRoom(io, session.id, 'TURN_READY', {
+      playerId: session.playerOrder[session.currentPlayerIndex],
+      phase: TurnPhase.END_TURN_PENDING,
+      availableActions: ['END_TURN'],
+    });
+  }
 }
 
 // ─── Bid-lock check ───────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import type { GameSession, SurpriseCard } from '../types/GameSession.types';
 import { SurpriseCardType } from '../types/GameSession.types';
 import type { S2C_SurpriseResult, S2C_SurpriseRampage, S2C_PropCardDrawn } from '../types/Events.types';
 import { PropCardType } from '../types/PropCard.types';
-import { cashChange } from '../state/GameSession';
+import { cashChange, requirePlayer, syncPropCards } from '../state/GameSession';
 import { broadcastToRoom } from '../socket/emitters/broadcast';
 import { fisherYatesShuffle } from '../utils/randomUtils';
 import { logger } from '../utils/logger';
@@ -25,20 +25,20 @@ import { logger } from '../utils/logger';
 function buildCardPool(): SurpriseCard[] {
   return [
     // Cash gains (placeholder amounts)
-    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 1000, description: '获得奖励金 1000' },
-    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 2000, description: '获得奖励金 2000' },
-    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 500,  description: '获得奖励金 500' },
-    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 3000, description: '获得奖励金 3000' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 1000, description: 'Receive a $1000 bonus' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 2000, description: 'Receive a $2000 bonus' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 500,  description: 'Receive a $500 bonus' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_GAIN, amount: 3000, description: 'Receive a $3000 bonus' },
     // Cash losses (placeholder amounts)
-    { id: uuidv4(), type: SurpriseCardType.CASH_LOSS, amount: 500,  description: '支付罚款 500' },
-    { id: uuidv4(), type: SurpriseCardType.CASH_LOSS, amount: 1000, description: '支付罚款 1000' },
-    { id: uuidv4(), type: SurpriseCardType.CASH_LOSS, amount: 2000, description: '支付维修费 2000' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_LOSS, amount: 500,  description: 'Pay a $500 fine' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_LOSS, amount: 1000, description: 'Pay a $1000 fine' },
+    { id: uuidv4(), type: SurpriseCardType.CASH_LOSS, amount: 2000, description: 'Pay $2000 in repair costs' },
     // Prop card draws
-    { id: uuidv4(), type: SurpriseCardType.PROP_CARD, amount: 0, description: '获得一张道具卡' },
-    { id: uuidv4(), type: SurpriseCardType.PROP_CARD, amount: 0, description: '获得一张道具卡' },
+    { id: uuidv4(), type: SurpriseCardType.PROP_CARD, amount: 0, description: 'Draw a prop card' },
+    { id: uuidv4(), type: SurpriseCardType.PROP_CARD, amount: 0, description: 'Draw a prop card' },
     // Rampage (extra roll)
-    { id: uuidv4(), type: SurpriseCardType.RAMPAGE, amount: 0, description: '狂奔！再掷一次骰子' },
-    { id: uuidv4(), type: SurpriseCardType.RAMPAGE, amount: 0, description: '狂奔！再掷一次骰子' },
+    { id: uuidv4(), type: SurpriseCardType.RAMPAGE, amount: 0, description: 'Rampage! Roll the dice again' },
+    { id: uuidv4(), type: SurpriseCardType.RAMPAGE, amount: 0, description: 'Rampage! Roll the dice again' },
   ];
 }
 
@@ -81,6 +81,8 @@ function randomPropCardType(): PropCardType {
 export interface SurpriseEffectResult {
   rampage: boolean;   // If true, caller must trigger another dice roll
   propCardDrawn: boolean;
+  requiresRescue: boolean;
+  amountOwed: Money;
 }
 
 /**
@@ -95,7 +97,12 @@ export function applySurpriseCard(
   const card = drawCard(session);
   session.surpriseDiscardPile.push(card);
 
-  const result: SurpriseEffectResult = { rampage: false, propCardDrawn: false };
+  const result: SurpriseEffectResult = {
+    rampage: false,
+    propCardDrawn: false,
+    requiresRescue: false,
+    amountOwed: 0 as Money,
+  };
 
   switch (card.type) {
     case SurpriseCardType.CASH_GAIN: {
@@ -110,7 +117,13 @@ export function applySurpriseCard(
     }
 
     case SurpriseCardType.CASH_LOSS: {
-      cashChange(session, playerId, -(card.amount as Money), 'SURPRISE_LOSS', io);
+      const player = requirePlayer(session, playerId);
+      if (player.cash >= card.amount) {
+        cashChange(session, playerId, -(card.amount as Money), 'SURPRISE_LOSS', io);
+      } else {
+        result.requiresRescue = true;
+        result.amountOwed = card.amount as Money;
+      }
       const payload: S2C_SurpriseResult = {
         playerId,
         cashDelta: -(card.amount),
@@ -126,6 +139,7 @@ export function applySurpriseCard(
       const player = session.players.get(playerId);
       if (player) {
         player.propCards.push({ id: uuidv4(), type: propCardType, acquiredAt: Date.now() });
+        syncPropCards(session, playerId, io);
       }
       // Broadcast: only reveal WHO drew, not what type
       const drawnPayload: S2C_PropCardDrawn = { playerId };

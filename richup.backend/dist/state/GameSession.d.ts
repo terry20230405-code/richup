@@ -23,6 +23,11 @@ export declare function startGame(session: GameSession): void;
  * @returns The player's new cash balance.
  */
 export declare function cashChange(session: GameSession, playerId: PlayerId, delta: Money, reason: string, io: Server): Money;
+/**
+ * Send the authoritative prop-card hand to its owner only.
+ * Call this after every successful server-side hand mutation.
+ */
+export declare function syncPropCards(session: GameSession, playerId: PlayerId, io: Server): void;
 export declare function requirePlayer(session: GameSession, playerId: PlayerId): Player;
 export declare function getCurrentPlayer(session: GameSession): Player;
 export declare function getCurrentPlayerId(session: GameSession): PlayerId;
@@ -38,6 +43,8 @@ export declare function advanceTurn(session: GameSession): void;
  * Returns the winner's PlayerId if only one active player remains, else null.
  */
 export declare function checkVictory(session: GameSession): PlayerId | null;
-/** Returns all TileIds owned by the given player. */
+/** Returns property TileIds that the player can manage during their turn. */
+export declare function getConstructibleTileIds(session: GameSession, playerId: PlayerId): number[];
+/** Returns all ownable TileIds owned by the given player. */
 export declare function getOwnedTileIds(session: GameSession, playerId: PlayerId): number[];
 //# sourceMappingURL=GameSession.d.ts.map

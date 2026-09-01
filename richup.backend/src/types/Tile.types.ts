@@ -4,16 +4,16 @@ import type { PlayerId, TileId, Money } from './Common.types';
  * All tile types on the 56-tile board.
  */
 export enum TileType {
-  PROPERTY   = 'PROPERTY',    // 可购买地皮
-  AIRPORT    = 'AIRPORT',     // 可购买机场（4个固定锚点）
-  TEMPLE     = 'TEMPLE',      // 寺庙（2个固定锚点）
-  CASINO     = 'CASINO',      // 赌场（2个固定锚点）
-  TAX        = 'TAX',         // 交税区（随机填充）
-  SURPRISE   = 'SURPRISE',    // 惊喜格（随机填充）
-  GO         = 'GO',          // 起点（index 0）
-  JAIL       = 'JAIL',        // 监狱/探视（index 28）
-  GO_TO_JAIL = 'GO_TO_JAIL',  // 去监狱（如适用）
-  FREE       = 'FREE',        // 无效果格
+  PROPERTY   = 'PROPERTY',    // Purchasable property.
+  AIRPORT    = 'AIRPORT',     // Purchasable airport at one of four fixed anchors.
+  TEMPLE     = 'TEMPLE',      // Temple at one of two fixed anchors.
+  CASINO     = 'CASINO',      // Casino at one of two fixed anchors.
+  TAX        = 'TAX',         // Tax tile in the randomized pool.
+  SURPRISE   = 'SURPRISE',    // Surprise tile in the randomized pool.
+  GO         = 'GO',          // Start tile at index 0.
+  JAIL       = 'JAIL',        // Jail or visiting tile at index 28.
+  GO_TO_JAIL = 'GO_TO_JAIL',  // Sends a player to jail when used.
+  FREE       = 'FREE',        // Tile with no effect.
 }
 
 /**
@@ -48,11 +48,10 @@ export interface TileBase {
  * Building level encoding:
  *   0 = empty lot
  *   1-4 = 1-4 houses
- *   5 = 1 hotel
- *   6 = 2 hotels
- *   7 = 3 hotels (max)
+ *   5 = hotel
+ *   6 = landmark (max)
  */
-export type BuildingLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export type BuildingLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface PropertyTile extends TileBase {
   type: TileType.PROPERTY;
@@ -66,7 +65,7 @@ export interface PropertyTile extends TileBase {
   // Rent table — placeholder zeros; real values injected from TileDefinitions
   baseRent: Money;                           // 0 buildings (no monopoly)
   baseRentWithMonopoly: Money;               // 0 buildings + full color group
-  rentByLevel: [Money, Money, Money, Money, Money, Money, Money]; // levels 1-7
+  rentByLevel: [Money, Money, Money, Money, Money, Money, Money]; // levels 0-6
 
   // Build cost per upgrade — set per city in TileDefinitions
   buildCost: Money;
@@ -146,6 +145,22 @@ export type Tile =
   | PropertyTile
   | AirportTile
   | TempleTile
+  | CasinoTile
+  | TaxTile
+  | SurpriseTile
+  | GoTile
+  | JailTile
+  | GoToJailTile
+  | FreeTile;
+
+/**
+ * Broadcast-safe tile shape. Temple progress is intentionally private; only
+ * the derived `isLit` state is exposed to clients.
+ */
+export type TilePublicView =
+  | PropertyTile
+  | AirportTile
+  | Omit<TempleTile, 'litCount'>
   | CasinoTile
   | TaxTile
   | SurpriseTile

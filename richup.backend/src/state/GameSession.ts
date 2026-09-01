@@ -12,7 +12,8 @@ import type { GameSession } from '../types/GameSession.types';
 import { GameStatus, TurnPhase } from '../types/GameSession.types';
 import type { Player } from '../types/Player.types';
 import { PlayerStatus } from '../types/Player.types';
-import type { S2C_CashUpdated } from '../types/Events.types';
+import { TileType } from '../types/Tile.types';
+import type { S2C_CashUpdated, S2C_PropCardsUpdated } from '../types/Events.types';
 import { generateBoard } from '../modules/MapGenerator';
 import { initSurpriseDeck } from '../modules/SurpriseHandler';
 import { StateMachine } from './StateMachine';
@@ -20,6 +21,7 @@ import { emitToPlayer } from '../socket/emitters/direct';
 import { fisherYatesShuffle } from '../utils/randomUtils';
 import { NotFoundError, RuleViolationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { cancelAllTimers } from '../utils/timerUtils';
 
 // ─── Start game ──────────────────────────────────────────────────────────────
 
@@ -35,6 +37,12 @@ export function startGame(session: GameSession): void {
   if (session.players.size < 2) {
     throw new RuleViolationError('Need at least 2 players to start');
   }
+  if ([...session.players.values()].some(player => !player.isConnected)) {
+    throw new RuleViolationError('All lobby players must be connected');
+  }
+
+  // No lobby reservation timer may survive into an active match.
+  cancelAllTimers(session.id);
 
   // Generate board
   session.board = generateBoard();
@@ -88,6 +96,18 @@ export function cashChange(
 
   logger.debug({ roomId: session.id, playerId, delta, newBalance: player.cash, reason }, 'Cash changed');
   return player.cash;
+}
+
+/**
+ * Send the authoritative prop-card hand to its owner only.
+ * Call this after every successful server-side hand mutation.
+ */
+export function syncPropCards(session: GameSession, playerId: PlayerId, io: Server): void {
+  const player = requirePlayer(session, playerId);
+  const payload: S2C_PropCardsUpdated = {
+    propCards: player.propCards.map(card => ({ ...card })),
+  };
+  emitToPlayer(io, playerId, 'PROP_CARDS_UPDATED', payload);
 }
 
 // ─── Player queries ───────────────────────────────────────────────────────────
@@ -146,6 +166,8 @@ export function advanceTurn(session: GameSession): void {
   session.currentPlayerIndex = next;
   session.turnNumber++;
   session.lastDiceRoll = null;
+  session.pendingExtraRoll = false;
+  session.remoteDiceOverride = null;
   session.pendingTileEvent = null;
 }
 
@@ -162,13 +184,22 @@ export function checkVictory(session: GameSession): PlayerId | null {
 
 // ─── Owned tiles helper ───────────────────────────────────────────────────────
 
-/** Returns all TileIds owned by the given player. */
-export function getOwnedTileIds(session: GameSession, playerId: PlayerId): number[] {
+/** Returns property TileIds that the player can manage during their turn. */
+export function getConstructibleTileIds(session: GameSession, playerId: PlayerId): number[] {
   const owned: number[] = [];
   for (const tile of session.board) {
-    if ('ownerId' in tile && tile.ownerId === playerId) {
+    if (tile.type === TileType.PROPERTY && tile.ownerId === playerId) {
       owned.push(tile.id);
     }
   }
   return owned;
+}
+
+/** Returns all ownable TileIds owned by the given player. */
+export function getOwnedTileIds(session: GameSession, playerId: PlayerId): number[] {
+  return session.board
+    .filter((tile): tile is typeof tile & { ownerId: PlayerId | null } =>
+      'ownerId' in tile && tile.ownerId === playerId,
+    )
+    .map(tile => tile.id);
 }

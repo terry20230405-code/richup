@@ -11,7 +11,7 @@ import {
   type TempleTile,
   type Tile,
 } from '../types/Tile.types';
-import { BOARD_CONFIG } from './GameConfig';
+import { BOARD_CONFIG, DEFAULT_GAME_CONFIG } from './GameConfig';
 
 /**
  * Static tile blueprints used by MapGenerator to initialize each game.
@@ -66,9 +66,9 @@ function makeTemple(id: number, name: string): TempleTile {
     mortgageValue: 200,
     isLit: false,
     litCount: 0,
-    litThreshold: 3,
-    prayFee: 300,
-    passThruToll: 50,
+    litThreshold: DEFAULT_GAME_CONFIG.templeLitThreshold,
+    prayFee: DEFAULT_GAME_CONFIG.templePrayFee,
+    passThruToll: DEFAULT_GAME_CONFIG.templePassThruToll,
   };
 }
 
@@ -77,7 +77,7 @@ function makeCasino(id: number, name: string): CasinoTile {
     id,
     name,
     type: TileType.CASINO,
-    betMultiple: 50,
+    betMultiple: DEFAULT_GAME_CONFIG.casinoBetMultiple,
     maxBet: 1000000,
   };
 }
@@ -107,7 +107,7 @@ export const FIXED_ANCHOR_TILES: ReadonlyMap<number, Tile> = new Map<number, Til
 ]);
 
 function makeProp(name: string, colorGroup: ColorGroup, basePrice: number, buildCost: number): Omit<PropertyTile, 'id'> {
-  // 1. 自动计算基础租金（比如地价的 10%，向下取整）
+  // 1. Calculate base rent automatically as 10% of the property price.
   const autoBaseRent = Math.floor(basePrice * 0.08); 
 
   return {
@@ -116,24 +116,24 @@ function makeProp(name: string, colorGroup: ColorGroup, basePrice: number, build
     colorGroup,
     basePrice,
     buildCost,
-    mortgageValue: basePrice * 0.5, // 抵押价
+    mortgageValue: basePrice * 0.5, // Mortgage value.
     buildingLevel: 0,
     isMortgaged: false,
     ownerId: null,
     
-    // 2. 自动填入计算好的租金
+    // 2. Apply the calculated rent values.
     baseRent: autoBaseRent,
-    baseRentWithMonopoly: autoBaseRent * 2, // 凑齐同色地皮租金翻倍
+    baseRentWithMonopoly: autoBaseRent * 2, // A monopoly doubles base rent.
     
-    // 3. 根据基础租金，按比例生成 0~6 级的租金数组 (倍数你可以自己调)
+    // 3. Generate level 0-6 rent values from the base rent.
     rentByLevel: [
-      autoBaseRent,       // 0级 (空地)
-      autoBaseRent * 5,   // 1级 (1栋房子)
-      autoBaseRent * 10,  // 2级 (2栋房子)
-      autoBaseRent * 20,  // 3级 (3栋房子)
-      autoBaseRent * 40,  // 4级 (4栋房子)
-      autoBaseRent * 50, // 5级 (旅馆)
-      autoBaseRent * 60  // 6级 (地标)
+      autoBaseRent,       // Level 0: undeveloped.
+      autoBaseRent * 5,   // Level 1: one house.
+      autoBaseRent * 10,  // Level 2: two houses.
+      autoBaseRent * 20,  // Level 3: three houses.
+      autoBaseRent * 40,  // Level 4: four houses.
+      autoBaseRent * 50,  // Level 5: hotel.
+      autoBaseRent * 60,  // Level 6: landmark.
     ],
     
   };
@@ -146,72 +146,72 @@ function makeProp(name: string, colorGroup: ColorGroup, basePrice: number, build
 export const PROPERTY_GROUP_TEMPLATES: ReadonlyArray<
   ReadonlyArray<Omit<PropertyTile, 'id'>>
 > = [
-  // ── 第 1 档：贫民窟区 (建房成本 $50) ──
-  // 韩国 (棕色)
+  // Tier 1: entry-level district ($50 build cost).
+  // South Korea (brown).
   [
     makeProp('Seoul', ColorGroup.BROWN, 80, 50),
     makeProp('Busan', ColorGroup.BROWN, 60, 50),
   ],
-  // 意大利 (紫色)
+  // Italy (purple).
   [
     makeProp('Rome', ColorGroup.PURPLE, 120, 50),
     makeProp('Milan', ColorGroup.PURPLE, 100, 50),
   ],
 
-  // ── 第 2 档：平民住宅区 (建房成本 $100) ──
-  // 加拿大 (浅蓝)
+  // Tier 2: residential district ($100 build cost).
+  // Canada (light blue).
   [
     makeProp('Toronto', ColorGroup.LIGHT_BLUE, 160, 100),
     makeProp('Vancouver', ColorGroup.LIGHT_BLUE, 140, 100),
     makeProp('Ottawa', ColorGroup.LIGHT_BLUE, 140, 100),
   ],
-  // 法国 (青色)
+  // France (teal).
   [
     makeProp('Paris', ColorGroup.TEAL, 200, 100),
     makeProp('Lyon', ColorGroup.TEAL, 180, 100),
   ],
 
-  // ── 第 3 档：中产商业区 (建房成本 $150) ──
-  // 英国 (粉色)
+  // Tier 3: commercial district ($150 build cost).
+  // United Kingdom (pink).
   [
     makeProp('London', ColorGroup.PINK, 240, 150),
-    makeProp('Manchester', ColorGroup.PINK, 220, 150),
+    makeProp('Leeds', ColorGroup.PINK, 220, 150),
     makeProp('Edinburgh', ColorGroup.PINK, 220, 150),
   ],
-  // 德国 (橙色)
+  // Germany (orange).
   [
     makeProp('Berlin', ColorGroup.ORANGE, 280, 150),
     makeProp('Frankfurt', ColorGroup.ORANGE, 260, 150),
     makeProp('Munich', ColorGroup.ORANGE, 260, 150),
   ],
 
-  // ── 第 4 档：核心金融区 (建房成本 $200) ──
-  // 日本 (红色)
+  // Tier 4: financial district ($200 build cost).
+  // Japan (red).
   [
     makeProp('Tokyo', ColorGroup.RED, 320, 200),
     makeProp('Osaka', ColorGroup.RED, 300, 200),
     makeProp('Kyoto', ColorGroup.RED, 300, 200),
   ],
-  // 中国 (黄色)
+  // China (yellow).
   [
     makeProp('Beijing', ColorGroup.YELLOW, 360, 200),
     makeProp('Shanghai', ColorGroup.YELLOW, 340, 200),
     makeProp('Shenzhen', ColorGroup.YELLOW, 340, 200),
   ],
-  // 美国 (绿色)
+  // United States (green).
   [
     makeProp('New York', ColorGroup.GREEN, 400, 200),
     makeProp('Houston', ColorGroup.GREEN, 380, 200),
     makeProp('Detroit', ColorGroup.GREEN, 360, 200),
   ],
 
-  // ── 第 5 档：奢华地标区 (建房成本 $250) ──
-  // 阿联酋 (灰色)
+  // Tier 5: luxury landmark district ($250 build cost).
+  // United Arab Emirates (gray).
   [
     makeProp('Dubai', ColorGroup.GRAY, 500, 250),
     makeProp('Abu Dhabi', ColorGroup.GRAY, 450, 250),
   ],
-  // 澳大利亚 (深蓝)
+  // Australia (dark blue).
   [
     makeProp('Sydney', ColorGroup.DARK_BLUE, 600, 250),
     makeProp('BNE', ColorGroup.DARK_BLUE, 550, 250),

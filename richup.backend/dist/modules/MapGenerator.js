@@ -24,7 +24,9 @@ function generateBoard() {
     const { TOTAL_TILES, RANDOM_POOL } = GameConfig_1.BOARD_CONFIG;
     const board = new Array(TOTAL_TILES).fill(null);
     for (const [id, tile] of TileDefinitions_1.FIXED_ANCHOR_TILES) {
-        board[id] = tile;
+        // Fixed definitions are immutable blueprints. Each room needs its own
+        // tile state so ownership, mortgages, and temple progress cannot leak.
+        board[id] = cloneFixedTile(tile);
     }
     const poolChunks = [
         ...TileDefinitions_1.PROPERTY_GROUP_TEMPLATES.map((group) => group.map((tile) => ({ ...tile }))),
@@ -49,6 +51,12 @@ function generateBoard() {
     }
     validateGeneratedBoard(board);
     return board;
+}
+function cloneFixedTile(tile) {
+    if (tile.type === Tile_types_1.TileType.AIRPORT) {
+        return { ...tile, rentTable: [...tile.rentTable] };
+    }
+    return { ...tile };
 }
 function validateGeneratedBoard(board) {
     if (board.length !== GameConfig_1.BOARD_CONFIG.TOTAL_TILES) {

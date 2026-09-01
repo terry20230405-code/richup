@@ -84,5 +84,6 @@ export const TimerNS = {
   auctionRound:  (roomId: string) => `${roomId}:auction:round`,
   dyingRescue:   (roomId: string, playerId: string) => `${roomId}:${playerId}:rescue`,
   dyingAfk:      (roomId: string, playerId: string) => `${roomId}:${playerId}:afk`,
+  lobbyReconnect:(roomId: string, playerId: string) => `${roomId}:${playerId}:lobby-reconnect`,
   reconnect:     (roomId: string, playerId: string) => `${roomId}:${playerId}:reconnect`,
 };

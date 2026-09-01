@@ -17,7 +17,7 @@ export declare function sendToJail(session: GameSession, playerId: PlayerId, io:
 /**
  * Player pays bail to leave jail immediately.
  * Deducts bail cost and clears jail flags.
- * Transitions to ROLLING_DICE so the player can still move this turn.
+ * Transitions to WAITING_FOR_ACTION so the player can still roll this turn.
  */
 export declare function payBail(session: GameSession, playerId: PlayerId, io: Server): void;
 /**

@@ -11,7 +11,7 @@ import type { PlayerId, TileId } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
 /** Build one house on the specified tile. */
 export declare function buildHouse(session: GameSession, playerId: PlayerId, tileId: TileId, io: Server): void;
-/** Build a hotel (upgrade from level 4 → 5, or 5→6, 6→7). */
+/** Upgrade beyond houses (level 4 → 5 → 6). */
 export declare function buildHotel(session: GameSession, playerId: PlayerId, tileId: TileId, io: Server): void;
 export declare function sellBuilding(session: GameSession, playerId: PlayerId, tileId: TileId, io: Server): void;
 export declare function mortgageProperty(session: GameSession, playerId: PlayerId, tileId: TileId, io: Server): void;

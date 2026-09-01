@@ -13,7 +13,6 @@ var TurnPhase;
     TurnPhase["MOVING"] = "MOVING";
     TurnPhase["EVENT_TRIGGER"] = "EVENT_TRIGGER";
     TurnPhase["AUCTION_IN_PROGRESS"] = "AUCTION_IN_PROGRESS";
-    TurnPhase["BUILD_PHASE"] = "BUILD_PHASE";
     TurnPhase["JAIL_DECISION"] = "JAIL_DECISION";
     TurnPhase["DYING_RESCUE"] = "DYING_RESCUE";
     TurnPhase["END_TURN_PENDING"] = "END_TURN_PENDING";

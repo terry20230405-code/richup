@@ -9,17 +9,18 @@
     <!-- ── Corner tiles ──────────────────────────────────────────── -->
     <template v-if="side === 'corner'">
       <div class="corner-inner">
-        <span class="corner-icon" aria-hidden="true">{{ cornerIcon }}</span>
+        <span class="corner-icon" aria-hidden="true">{{ tileArt }}</span>
         <span class="corner-label">{{ displayName }}</span>
         <div v-if="players.length > 0" class="corner-tokens">
           <span
             v-for="player in players"
             :key="player.id"
             class="player-token"
-            :class="{ 'player-token-current': player.isCurrent }"
             :style="{ '--token-color': player.color }"
             :title="player.nickname"
-          >{{ player.nickname.slice(0, 1).toUpperCase() }}</span>
+            :aria-label="player.nickname"
+            role="img"
+          />
         </div>
       </div>
     </template>
@@ -39,55 +40,40 @@
             class="tile-price"
           >${{ tile.basePrice }}</span>
 
-          <!-- PROPERTY level 1–4: house count -->
+          <!-- Property buildings use a compact level marker to keep the map readable. -->
           <span
-            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) >= 1 && (tile.buildingLevel ?? 0) <= 4"
+            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) > 0"
             class="building-indicator"
-          >🏠×{{ tile.buildingLevel }}</span>
-
-          <!-- PROPERTY level 5: hotel -->
-          <span
-            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) === 5"
-            class="building-indicator"
-          >🏨</span>
-
-          <!-- PROPERTY level 6: landmark -->
-          <span
-            v-else-if="tile.type === 'PROPERTY' && (tile.buildingLevel ?? 0) === 6"
-            class="building-indicator"
-          >🏰</span>
+          >L{{ tile.buildingLevel }}</span>
         </div>
       </div>
 
       <!-- 2. Middle: Name + buildings -->
       <div class="tile-body">
         <div class="body-content">
+          <CountryFlag
+            v-if="countryFlagCode"
+            :code="countryFlagCode"
+            class="tile-art tile-art--flag"
+            aria-hidden="true"
+          />
+          <span v-else-if="tileArt" class="tile-art" aria-hidden="true">{{ tileArt }}</span>
           <span class="tile-name">{{ displayName }}</span>
-
         </div>
       </div>
 
-      <!-- 3. Inner edge: Flag / Icon + player tokens (no color strip) -->
-      <div class="tile-inner-zone">
-        <div class="icon-token-area">
-          <img
-            v-if="tile.type === 'PROPERTY' && flagCode"
-            :src="`https://flagcdn.com/w20/${flagCode}.png`"
-            class="tile-flag"
-            aria-hidden="true"
+      <!-- 3. Inner edge: player tokens only (decorative flags/icons are intentionally omitted). -->
+      <div v-if="players.length > 0" class="tile-inner-zone">
+        <div class="player-stack">
+          <span
+            v-for="player in players"
+            :key="player.id"
+            class="player-token"
+            :style="{ '--token-color': player.color }"
+            :title="player.nickname"
+            :aria-label="player.nickname"
+            role="img"
           />
-          <span v-else class="tile-icon" aria-hidden="true">{{ tileIcon }}</span>
-
-          <div v-if="players.length > 0" class="player-stack">
-            <span
-              v-for="player in players"
-              :key="player.id"
-              class="player-token"
-              :class="{ 'player-token-current': player.isCurrent }"
-              :style="{ '--token-color': player.color }"
-              :title="player.nickname"
-            >{{ player.nickname.slice(0, 1).toUpperCase() }}</span>
-          </div>
         </div>
       </div>
     </template>
@@ -117,6 +103,7 @@ import type { TilePublicView } from '@/types';
 import type { TileSide } from './BoardView.vue';
 import FloatingText from './FloatingText.vue';
 import TilePopover from './TilePopover.vue';
+import CountryFlag from './CountryFlag.vue';
 import { useFloatingTextStore } from '@/stores/useFloatingTextStore';
 import { useTileSelection } from '@/composables/useTileSelection';
 import { useGameStore } from '@/stores/useGameStore';
@@ -152,125 +139,52 @@ const handleClick = (e: MouseEvent) => {
   tileSelection.toggle(props.tile.id);
 };
 
-const GROUP_COLORS: Record<string, string> = {
-  BROWN:      '#8B4513',
-  LIGHT_BLUE: '#87CEEB',
-  PINK:       '#FF69B4',
-  ORANGE:     '#FFA500',
-  RED:        '#FF0000',
-  YELLOW:     '#FFD700',
-  GREEN:      '#008000',
-  DARK_BLUE:  '#00008B',
-  PURPLE:     '#800080',
-  TEAL:       '#008080',
-  GRAY:       '#808080',
-};
-
-const COUNTRY_FLAG_CODES: Record<string, string> = {
+/** Each property color group represents one country in the board definition. */
+const COUNTRY_FLAGS: Record<string, string> = {
   BROWN:      'kr',
+  PURPLE:     'it',
   LIGHT_BLUE: 'ca',
+  TEAL:       'fr',
   PINK:       'gb',
   ORANGE:     'de',
   RED:        'jp',
   YELLOW:     'cn',
   GREEN:      'us',
-  DARK_BLUE:  'au',
-  PURPLE:     'it',
-  TEAL:       'fr',
   GRAY:       'ae',
+  DARK_BLUE:  'au',
 };
 
-const TILE_ICONS: Record<string, string> = {
-  AIRPORT:    '✈',
-  TEMPLE:     '⛩',
-  CASINO:     '🤑',
-  TAX:        '💸',
+const SPECIAL_TILE_ART: Record<string, string> = {
+  AIRPORT:    '✈️',
+  TEMPLE:     '🛕',
+  CASINO:     '🎰',
+  TAX:        '💰',
   SURPRISE:   '❓',
-  GO:         '▶',
-  JAIL:       '⛓',
+  GO:         '🏁',
+  JAIL:       '⛓️',
   GO_TO_JAIL: '🚔',
   FREE:       '🌴',
-  PROPERTY:   '🏠',
-};
-
-const CORNER_ICONS: Record<string, string> = {
-  GO:         '▶',
-  JAIL:       '⛓',
-  GO_TO_JAIL: '🚔',
-  FREE:       '🌴',
-  TEMPLE:     '🛕', 
-};
-
-// Chinese → English tile name translations
-const TILE_NAME_EN: Record<string, string> = {
-  // Special tiles
-  '起点':           'GO',
-  '监狱':           'Jail',
-  '监狱/探视':      'Jail / Visit',
-  '去监狱':         'Go to Jail',
-  '免费停留':       'Free Parking',
-  '惊喜格':         'Surprise',
-  '交税格':         'Tax',
-  '奢侈税':         'Luxury Tax',
-  '所得税':         'Income Tax',
-  // Temples & Casinos
-  '东方古寺':       'East Temple',
-  '西方古寺':       'West Temple',
-  '东方古寺（寺庙A）': 'East Temple (A)',
-  '西方古寺（寺庙B）': 'West Temple (B)',
-  '赌场':           'Casino',
-  // Utilities
-  '水务公司':       'Water Co.',
-  '电力公司':       'Electric Co.',
-  // Americas
-  '纽约':           'New York',
-  '洛杉矶':         'Los Angeles',
-  '旧金山':         'San Francisco',
-  '萨尔瓦多':       'Salvador',
-  '里约':           'Rio',
-  // Europe
-  '伦敦':           'London',
-  '曼彻斯特':       'Manchester',
-  '利物浦':         'Liverpool',
-  '爱丁堡':         'Edinburgh',
-  '巴黎':           'Paris',
-  '里昂':           'Lyon',
-  '图卢兹':         'Toulouse',
-  '柏林':           'Berlin',
-  '法兰克福':       'Frankfurt',
-  '慕尼黑':         'Munich',
-  '罗马':           'Rome',
-  '米兰':           'Milan',
-  '威尼斯':         'Venice',
-  // Asia
-  '北京':           'Beijing',
-  '上海':           'Shanghai',
-  '深圳':           'Shenzhen',
-  '首尔':           'Seoul',
-  '釜山':           'Busan',
-  '大阪':           'Osaka',
-  '东京':           'Tokyo',
-  // Middle East & Oceania
-  '迪拜':           'Dubai',
-  '阿布扎比':       'Abu Dhabi',
-  '特拉维夫':       'Tel Aviv',
-  '海法':           'Haifa',
-  '耶路撒冷':       'Jerusalem',
-  '悉尼':           'Sydney',
-  '墨尔本':         'Melbourne',
-  // Airports
-  'JFK机场':        'JFK Airport',
-  'CDG机场':        'CDG Airport',
-  'MUC机场':        'MUC Airport',
-  'TLV机场':        'TLV Airport',
 };
 
 const typeClass = computed(() => `tile-${props.tile.type.toLowerCase()}`);
 
 const hasCurrentPlayer = computed(() => props.players.some((p) => p.isCurrent));
 
-/** Translate tile name: Chinese → English, fallback to original */
-const displayName = computed(() => TILE_NAME_EN[props.tile.name] ?? props.tile.name);
+const displayName = computed(() => props.tile.name);
+
+const countryFlagCode = computed(() => (
+  props.tile.type === 'PROPERTY' && props.tile.colorGroup
+    ? (COUNTRY_FLAGS[props.tile.colorGroup] ?? null)
+    : null
+));
+
+const tileArt = computed(() => {
+  if (props.tile.type === 'PROPERTY') {
+    return countryFlagCode.value ? '' : '🏙️';
+  }
+
+  return SPECIAL_TILE_ART[props.tile.type] ?? '◆';
+});
 
 /**
  * Uniform cell background: keep the warm beige base (#f8f4ec) for most tiles;
@@ -288,16 +202,6 @@ const cardStyle = computed(() => {
   }
   return {};
 });
-
-const flagCode = computed(() =>
-  props.tile.type === 'PROPERTY' && props.tile.colorGroup
-    ? (COUNTRY_FLAG_CODES[props.tile.colorGroup] ?? null)
-    : null,
-);
-
-const tileIcon = computed(() => TILE_ICONS[props.tile.type] ?? '');
-
-const cornerIcon = computed(() => CORNER_ICONS[props.tile.type] ?? '★');
 
 const currentAirportToll = computed(() => {
   if (props.tile.type !== 'AIRPORT' || props.tile.ownerId == null || !props.tile.rentTable) return null;
@@ -338,6 +242,9 @@ const currentAirportToll = computed(() => {
 
 /* ── 1. Outer edge: Price zone ──────────────────────────────────── */
 .tile-price-zone {
+  position: relative;
+  z-index: 2;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -349,6 +256,26 @@ const currentAirportToll = computed(() => {
 
 .side--left   .tile-price-zone,
 .side--right  .tile-price-zone { width: 22%; height: 100%; }
+
+.side--top .tile-price-zone {
+  align-items: flex-start;
+  padding-top: 2px;
+}
+
+.side--bottom .tile-price-zone {
+  align-items: flex-end;
+  padding-bottom: 2px;
+}
+
+.side--left .tile-price-zone {
+  justify-content: flex-start;
+  padding-left: 2px;
+}
+
+.side--right .tile-price-zone {
+  justify-content: flex-end;
+  padding-right: 2px;
+}
 
 .price-content {
   display: flex;
@@ -396,51 +323,69 @@ const currentAirportToll = computed(() => {
 /* ── 2. Middle: Body ────────────────────────────────────────────── */
 .tile-body {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  padding: 2px 4px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .body-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .tile-name {
+  position: absolute;
+  top: 54%;
+  left: 50%;
+  display: inline-block;
   font-family: 'Itim', cursive;
-  font-size: 0.72rem;
+  font-size: 0.62rem;
   font-weight: 400;
-  line-height: 1.2;
+  line-height: 1;
+  letter-spacing: -0.09em;
   color: #2a1f14;
   text-align: center;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  hyphens: auto;
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
   max-width: 100%;
-}
-/* 只把顶部格子的地名往下平移 4px */
-.side--top .tile-name {
-  transform: translateY(1px);
+  transform: translate(-50%, -50%);
 }
 
-/* 只把左侧格子的地名往右平移 4px */
-.side--left .tile-name {
-  transform: translateX(1px);
+.tile-art {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  font-size: 0.92rem;
+  line-height: 1;
+  transform: translate(-50%, -50%);
 }
 
-.side--right .tile-name {
-  transform: translateX(-1px);
+.tile-art--flag {
+  width: 1.08rem;
+  height: 0.72rem;
+}
+
+.side--bottom .tile-art {
+  top: 70%;
 }
 
 .side--bottom .tile-name {
-  transform: translateY(-1px);
+  top: 46%;
+}
+
+.side--left .tile-art {
+  top: 50%;
+  left: 32%;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.side--right .tile-art {
+  top: 50%;
+  left: 68%;
+  transform: translate(-50%, -50%) rotate(-90deg);
 }
 
 /* ── Text rotation: left / right columns ────────────────────────────
@@ -455,20 +400,34 @@ const currentAirportToll = computed(() => {
  *                 A player standing on the right tilts head right and reads
  *                 left-to-right naturally.
  * ─────────────────────────────────────────────────────────────────── */
-.side--left .price-content,
-.side--left .body-content {
+.side--left .price-content {
   writing-mode: vertical-rl;
-  
 }
 
-.side--right .price-content,
-.side--right .body-content {
+.side--right .price-content {
   writing-mode: vertical-rl;
   transform: rotate(180deg);
 }
 
-/* ── 3. Inner edge: Icon & Tokens ───────────────────────────────── */
+.side--left .tile-name,
+.side--right .tile-name {
+  top: 50%;
+  writing-mode: vertical-rl;
+}
+
+.side--left .tile-name {
+  left: 54%;
+}
+
+.side--right .tile-name {
+  left: 46%;
+  transform: translate(-50%, -50%) rotate(180deg);
+}
+
+/* ── 3. Inner edge: Player tokens ───────────────────────────────── */
 .tile-inner-zone {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -481,96 +440,30 @@ const currentAirportToll = computed(() => {
 .side--left   .tile-inner-zone,
 .side--right  .tile-inner-zone { width: 36%; height: 100%; }
 
-.icon-token-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  padding: 2px;
-}
-
-.tile-icon {
-  font-size: 1.1em;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.side--bottom .tile-icon {
-  transform: translateY(-5px) rotate(0deg); /* 底部边上的表情翻转 180° (倒立) */
-}
-
-.side--left .tile-icon {
-  transform: translateX(5px) rotate(90deg); /* 左侧边上的表情旋转 90° (与垂直文字对齐) */
-}
-
-.side--right .tile-icon {
-  transform: translateX(-5px) rotate(-90deg); /* 右侧边上的表情旋转 -90° (与垂直文字对齐) */
-}
-/* 顶部（.side--top）默认为 0deg */
- .side--top .tile-icon {
-  transform: translateY(5px) rotate(0deg); /* 顶部边上的表情旋转 0° (与水平文字对齐) */
-}
-/* 1. 先定义所有国旗共用的基础样式 */
-.tile-flag {
-  width: 20px;
-  height: auto;
-  flex-shrink: 0;
-  border-radius: 2px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-} /* <--- 注意这里！要先把基础样式的大括号关上 */
-
-/* 2. 然后在外面单独定义四个方向的移动和旋转 */
-
-/* 顶部的格子 */
-.side--top .tile-flag {
-  transform: translateY(5px) rotate(0deg); 
-}
-
-/* 底部的格子 */
-.side--bottom .tile-flag {
-  transform: translateY(-5px) rotate(0deg);
-}
-
-/* 左侧的格子 */
-.side--left .tile-flag {
-  transform: translateX(5px) rotate(90deg);
-}
-
-/* 右侧的格子 */
-.side--right .tile-flag {
-  transform: translateX(-5px) rotate(-90deg);
-}
-
 .player-stack {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
   align-items: center;
   justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .player-token {
-  width: 16px;
-  height: 16px;
+  position: relative;
+  width: 13px;
+  height: 13px;
+  box-sizing: border-box;
   border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   background: var(--token-color, #8f5d23);
-  color: #fff;
-  font-size: 0.55rem;
-  font-weight: 700;
+  border: none;
   flex-shrink: 0;
-  /* Always render tokens horizontal, unaffected by parent writing-mode */
   writing-mode: horizontal-tb !important;
   transform: none !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  box-shadow: none;
 }
 
-.player-token-current {
-  outline: 2px solid #fff;
-  box-shadow: 0 0 0 3px rgba(255, 140, 40, 0.8);
+.player-stack .player-token + .player-token {
+  margin-left: -9px;
 }
 
 /* ── Corner tiles ───────────────────────────────────────────────── */
@@ -591,7 +484,10 @@ const currentAirportToll = computed(() => {
   padding: 8px;
 }
 
-.corner-icon { font-size: 2.2em; line-height: 1; }
+.corner-icon {
+  font-size: 1.7rem;
+  line-height: 1;
+}
 
 .corner-label {
   font-family: 'Itim', cursive;
@@ -607,11 +503,14 @@ const currentAirportToll = computed(() => {
 
 .corner-tokens {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: center;
   margin-top: 4px;
+}
+
+.corner-tokens .player-token + .player-token {
+  margin-left: -9px;
 }
 
 /* Subtle hover highlight so tiles feel interactive */
@@ -636,11 +535,14 @@ const currentAirportToll = computed(() => {
 
 /* ── Responsive ─────────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  .tile-name    { font-size: 0.58rem; }
-  .tile-icon    { font-size: 0.9em; }
-  .corner-icon  { font-size: 1.8em; }
+  .tile-name    { font-size: 0.52rem; }
+  .tile-art     { font-size: 0.78rem; }
+  .tile-art--flag { width: 0.96rem; height: 0.64rem; }
+  .corner-icon  { font-size: 1.45rem; }
   .corner-label { font-size: 0.6rem; }
-  .player-token { width: 14px; height: 14px; font-size: 0.5rem; }
+  .player-token { width: 12px; height: 12px; }
+  .player-stack .player-token + .player-token,
+  .corner-tokens .player-token + .player-token { margin-left: -8px; }
   .tile-price   { font-size: 0.55rem; }
 }
 </style>

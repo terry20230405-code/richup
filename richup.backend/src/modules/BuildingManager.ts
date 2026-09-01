@@ -10,7 +10,7 @@
 import type { Server } from 'socket.io';
 import type { PlayerId, TileId, Money } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
-import type { PropertyTile } from '../types/Tile.types';
+import type { BuildingLevel, PropertyTile } from '../types/Tile.types';
 import { TileType } from '../types/Tile.types';
 import type {
   S2C_BuildingBuilt,
@@ -26,8 +26,7 @@ import { NotFoundError, RuleViolationError, InsufficientFundsError } from '../ut
 import { logger } from '../utils/logger';
 
 const MAX_HOUSE_LEVEL = 4;
-const HOTEL_LEVEL = 5;     // level 5 = 1 hotel; 6 = 2 hotels; 7 = 3 hotels per PRD
-const MAX_LEVEL = 7;
+const MAX_LEVEL = 6;
 
 // ─── Build ────────────────────────────────────────────────────────────────────
 
@@ -74,7 +73,7 @@ export function buildHouse(
 
   assertNotBidLocked(session, playerId, cost as Money);
 
-  tile.buildingLevel++;
+  tile.buildingLevel = (tile.buildingLevel + 1) as BuildingLevel;
   cashChange(session, playerId, -cost as Money, 'BUILD_HOUSE', io);
 
   const payload: S2C_BuildingBuilt = {
@@ -87,7 +86,7 @@ export function buildHouse(
   logger.debug({ roomId: session.id, playerId, tileId, level: tile.buildingLevel }, 'House built');
 }
 
-/** Build a hotel (upgrade from level 4 → 5, or 5→6, 6→7). */
+/** Upgrade beyond houses (level 4 → 5 → 6). */
 export function buildHotel(
   session: GameSession,
   playerId: PlayerId,
@@ -130,7 +129,7 @@ export function buildHotel(
 
   assertNotBidLocked(session, playerId, cost as Money);
 
-  tile.buildingLevel++;
+  tile.buildingLevel = (tile.buildingLevel + 1) as BuildingLevel;
   cashChange(session, playerId, -cost as Money, 'BUILD_HOTEL', io);
 
   const payload: S2C_BuildingBuilt = {
@@ -173,7 +172,7 @@ export function sellBuilding(
   }
 
   const refund = Math.floor(tile.buildCost * session.config.buildingRefundRate) as Money;
-  tile.buildingLevel--;
+  tile.buildingLevel = (tile.buildingLevel - 1) as BuildingLevel;
 
   cashChange(session, playerId, refund, 'SELL_BUILDING', io);
 
@@ -253,4 +252,3 @@ function requireOwnedProperty(
   if (prop.ownerId !== playerId) throw new RuleViolationError('You do not own this tile');
   return prop;
 }
-

@@ -18,6 +18,7 @@ exports.resolveAuction = resolveAuction;
 exports.assertNotBidLocked = assertNotBidLocked;
 const uuid_1 = require("uuid");
 const GameSession_types_1 = require("../types/GameSession.types");
+const Tile_types_1 = require("../types/Tile.types");
 const Auction_types_1 = require("../types/Auction.types");
 const GameSession_1 = require("../state/GameSession");
 const StateMachine_1 = require("../state/StateMachine");
@@ -34,6 +35,13 @@ const logger_1 = require("../utils/logger");
 function startAuction(session, tileId, io) {
     if (session.activeAuction) {
         throw new errors_1.RuleViolationError('An auction is already in progress');
+    }
+    const tile = session.board[tileId];
+    if (!tile || (tile.type !== Tile_types_1.TileType.PROPERTY && tile.type !== Tile_types_1.TileType.AIRPORT)) {
+        throw new errors_1.RuleViolationError('Only property and airport tiles can be auctioned');
+    }
+    if (!('ownerId' in tile) || tile.ownerId !== null) {
+        throw new errors_1.RuleViolationError('Only unowned tiles can be auctioned');
     }
     const activePlayerIds = [...session.players.values()].filter(p => p.status === 'ACTIVE' || p.status === 'DISCONNECTED');
     const auction = {
@@ -54,7 +62,6 @@ function startAuction(session, tileId, io) {
     };
     session.activeAuction = auction;
     StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.AUCTION_IN_PROGRESS);
-    const tile = session.board[tileId];
     const payload = {
         auction: {
             id: auction.id,
@@ -132,10 +139,21 @@ function passAuction(session, bidderId, io) {
         return;
     auction.activePlayerIds = auction.activePlayerIds.filter(id => id !== bidderId);
     auction.passedPlayerIds.push(bidderId);
+    if (auction.currentLeaderId === bidderId) {
+        // A bidder cannot pass and remain the winner. Release the bid lock and
+        // reset the auction so the remaining participants can bid again.
+        auction.currentLeaderId = null;
+        auction.currentBid = session.config.startingBid;
+        auction.lockedBid = 0;
+    }
     const payload = {
         auctionId: auction.id,
         passedPlayerId: bidderId,
         remainingActiveCount: auction.activePlayerIds.length,
+        activePlayerIds: [...auction.activePlayerIds],
+        passedPlayerIds: [...auction.passedPlayerIds],
+        currentLeaderId: auction.currentLeaderId,
+        currentBid: auction.currentBid,
     };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'AUCTION_PLAYER_PASSED', payload);
     // Check resolution: ≤1 active player remaining
@@ -151,8 +169,18 @@ function passAuction(session, bidderId, io) {
 function resolveAuction(session, io) {
     const auction = requireActiveAuction(session);
     (0, timerUtils_1.cancelTimer)(timerUtils_1.TimerNS.auctionRound(session.id));
+    // If the current leader passed, the last remaining participant wins at the
+    // current bid (which is reset to the configured starting bid by passAuction).
+    // This also handles a zero-value hammer down instead of incorrectly treating
+    // the auction as a no-sale.
+    if (!auction.currentLeaderId && auction.activePlayerIds.length === 1) {
+        auction.currentLeaderId = auction.activePlayerIds[0] ?? null;
+        auction.currentBid = session.config.startingBid;
+    }
     auction.status = Auction_types_1.AuctionStatus.RESOLVED;
     auction.lockedBid = 0;
+    auction.winnerId = auction.currentLeaderId;
+    auction.finalPrice = auction.currentLeaderId ? auction.currentBid : null;
     if (auction.currentLeaderId && auction.currentBid > 0) {
         // Hammer down — winner pays
         const winner = session.players.get(auction.currentLeaderId);
@@ -189,12 +217,32 @@ function resolveAuction(session, io) {
     }
     else {
         // No sale
+        auction.status = Auction_types_1.AuctionStatus.NO_SALE;
+        auction.winnerId = null;
+        auction.finalPrice = null;
         const payload = { auctionId: auction.id, tileId: auction.tileId };
         (0, broadcast_1.broadcastToRoom)(io, session.id, 'AUCTION_NO_SALE', payload);
         logger_1.logger.info({ roomId: session.id }, 'Auction no sale');
     }
     session.activeAuction = null;
-    StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.END_TURN_PENDING);
+    session.pendingTileEvent = null;
+    if (session.pendingExtraRoll) {
+        session.pendingExtraRoll = false;
+        StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.WAITING_FOR_ACTION);
+        (0, broadcast_1.broadcastToRoom)(io, session.id, 'TURN_READY', {
+            playerId: session.playerOrder[session.currentPlayerIndex],
+            phase: GameSession_types_1.TurnPhase.WAITING_FOR_ACTION,
+            availableActions: ['ROLL_DICE'],
+        });
+    }
+    else {
+        StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.END_TURN_PENDING);
+        (0, broadcast_1.broadcastToRoom)(io, session.id, 'TURN_READY', {
+            playerId: session.playerOrder[session.currentPlayerIndex],
+            phase: GameSession_types_1.TurnPhase.END_TURN_PENDING,
+            availableActions: ['END_TURN'],
+        });
+    }
 }
 // ─── Bid-lock check ───────────────────────────────────────────────────────────
 /**

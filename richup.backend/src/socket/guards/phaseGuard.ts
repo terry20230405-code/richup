@@ -3,6 +3,7 @@ import type { GameSession } from '../../types/GameSession.types';
 import { TurnPhase } from '../../types/GameSession.types';
 import type { S2C_ActionRejected } from '../../types/Events.types';
 import { PhaseViolationError } from '../../utils/errors';
+import { emitToSocket } from '../emitters/direct';
 
 /**
  * Verify the session is in one of the allowed phases.
@@ -20,7 +21,7 @@ export function phaseGuard(
       reason: `Action "${action}" not allowed in phase "${session.currentPhase}"`,
       code: 'WRONG_PHASE',
     };
-    socket.emit('ACTION_REJECTED', payload);
+    emitToSocket(socket, 'ACTION_REJECTED', payload);
     return false;
   }
   return true;

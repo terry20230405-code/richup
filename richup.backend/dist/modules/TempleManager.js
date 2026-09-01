@@ -11,6 +11,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.handleTempleLanding = handleTempleLanding;
 exports.ownerPrays = ownerPrays;
+const GameSession_types_1 = require("../types/GameSession.types");
 const Tile_types_1 = require("../types/Tile.types");
 const PropCard_types_1 = require("../types/PropCard.types");
 const GameSession_1 = require("../state/GameSession");
@@ -42,7 +43,13 @@ function handleTempleLanding(session, landingPlayerId, tileId, io) {
     if (!tile || tile.type !== Tile_types_1.TileType.TEMPLE)
         throw new errors_1.NotFoundError('TempleTile', tileId);
     const temple = tile;
-    const result = { ownerPrayed: false, propCardDrawn: false, rentCharged: false };
+    const result = {
+        ownerPrayed: false,
+        propCardDrawn: false,
+        rentCharged: false,
+        requiresRescue: false,
+        amountOwed: 0,
+    };
     if (!temple.ownerId) {
         // Unowned — no effect (player can buy in EVENT_TRIGGER phase)
         return result;
@@ -54,6 +61,7 @@ function handleTempleLanding(session, landingPlayerId, tileId, io) {
             const player = (0, GameSession_1.requirePlayer)(session, landingPlayerId);
             const propType = randomPropType();
             player.propCards.push({ id: (0, uuid_1.v4)(), type: propType, acquiredAt: Date.now() });
+            (0, GameSession_1.syncPropCards)(session, landingPlayerId, io);
             const drawnPayload = { playerId: landingPlayerId };
             (0, broadcast_1.broadcastToRoom)(io, session.id, 'PROP_CARD_DRAWN', drawnPayload);
             result.propCardDrawn = true;
@@ -69,6 +77,12 @@ function handleTempleLanding(session, landingPlayerId, tileId, io) {
         // Non-owner: charge pass-through toll
         const rentResult = (0, RentCalculator_1.computeRent)(session, tileId, landingPlayerId);
         if (rentResult.amount > 0) {
+            const landingPlayer = (0, GameSession_1.requirePlayer)(session, landingPlayerId);
+            if (landingPlayer.cash < rentResult.amount) {
+                result.requiresRescue = true;
+                result.amountOwed = rentResult.amount;
+                return result;
+            }
             (0, GameSession_1.cashChange)(session, landingPlayerId, -rentResult.amount, 'TEMPLE_TOLL', io);
             if (rentResult.recipient !== Common_types_1.BANK_ID) {
                 (0, GameSession_1.cashChange)(session, rentResult.recipient, rentResult.amount, 'TEMPLE_TOLL_RECEIVE', io);
@@ -78,6 +92,8 @@ function handleTempleLanding(session, landingPlayerId, tileId, io) {
                 to: rentResult.recipient,
                 tileId,
                 amount: rentResult.amount,
+                phase: session.pendingExtraRoll ? GameSession_types_1.TurnPhase.WAITING_FOR_ACTION : GameSession_types_1.TurnPhase.END_TURN_PENDING,
+                availableActions: session.pendingExtraRoll ? ['ROLL_DICE'] : ['END_TURN'],
             };
             (0, broadcast_1.broadcastToRoom)(io, session.id, 'RENT_CHARGED', payload);
             result.rentCharged = true;
@@ -100,13 +116,13 @@ function ownerPrays(session, playerId, tileId, io) {
     if (temple.isLit)
         throw new errors_1.RuleViolationError('Temple is already lit');
     const player = (0, GameSession_1.requirePlayer)(session, playerId);
-    const prayFee = temple.prayFee;
+    const prayFee = session.config.templePrayFee;
     if (player.cash < prayFee) {
         throw new errors_1.RuleViolationError('Insufficient funds to pray');
     }
     (0, GameSession_1.cashChange)(session, playerId, -prayFee, 'TEMPLE_PRAY', io);
     temple.litCount++;
-    if (temple.litCount >= temple.litThreshold) {
+    if (temple.litCount >= session.config.templeLitThreshold) {
         temple.isLit = true;
         const litPayload = { tileId, isLit: true };
         (0, broadcast_1.broadcastToRoom)(io, session.id, 'TEMPLE_LIT', litPayload);

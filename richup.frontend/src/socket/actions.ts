@@ -1,54 +1,20 @@
 import type { ProposeTrade, TileId, UsePropCard } from '@/types';
-import type { ReconnectActionPayload } from '@/types/socket';
+import type {
+  ClientActionPayloads,
+  GameActionEvent,
+  ReconnectActionPayload,
+} from '@/types/socket';
 
 import { gameSocket } from './client';
 
 type EmptyPayload = Record<string, never>;
 
-interface AmountPayload {
-  amount: number;
-}
-
-interface TileActionPayload {
-  tileId: TileId;
-}
-
-interface TradeDecisionPayload {
-  tradeId: string;
-}
-
-export type GameActionEvent =
-  | 'action:START_GAME'
-  | 'action:ROLL_DICE'
-  | 'action:ROLL_FOR_DOUBLE'
-  | 'action:END_TURN'
-  | 'action:DECLARE_BANKRUPTCY'
-  | 'action:BUY_PROPERTY'
-  | 'action:CHOOSE_AUCTION'
-  | 'action:SKIP_PURCHASE'
-  | 'action:TEMPLE_PRAY'
-  | 'action:CASINO_BET'
-  | 'action:PAY_BAIL'
-  | 'action:PAY_TAX'
-  | 'action:AUCTION_BID'
-  | 'action:AUCTION_PASS'
-  | 'action:BUILD_HOUSE'
-  | 'action:BUILD_HOTEL'
-  | 'action:SELL_BUILDING'
-  | 'action:MORTGAGE'
-  | 'action:UNMORTGAGE'
-  | 'action:PROPOSE_TRADE'
-  | 'action:ACCEPT_TRADE'
-  | 'action:REJECT_TRADE'
-  | 'action:CANCEL_TRADE'
-  | 'action:USE_PROP_CARD'
-  | 'action:RECONNECT';
-
 const EMPTY_PAYLOAD: EmptyPayload = {};
 
-const emitAction = <TPayload>(event: GameActionEvent, payload: TPayload): void => {
-  gameSocket.emit(event, payload);
-};
+const emitAction = gameSocket.emit.bind(gameSocket) as <TEvent extends GameActionEvent>(
+  event: TEvent,
+  payload: ClientActionPayloads[TEvent],
+) => void;
 
 export const startGame = (): void => {
   emitAction('action:START_GAME', EMPTY_PAYLOAD);
@@ -87,7 +53,7 @@ export const templePray = (): void => {
 };
 
 export const placeCasinoBet = (amount: number): void => {
-  emitAction<AmountPayload>('action:CASINO_BET', { amount });
+  emitAction('action:CASINO_BET', { amount });
 };
 
 export const payBail = (): void => {
@@ -99,7 +65,7 @@ export const payTax = (): void => {
 };
 
 export const placeAuctionBid = (amount: number): void => {
-  emitAction<AmountPayload>('action:AUCTION_BID', { amount });
+  emitAction('action:AUCTION_BID', { amount });
 };
 
 export const passAuction = (): void => {
@@ -107,23 +73,23 @@ export const passAuction = (): void => {
 };
 
 export const buildHouse = (tileId: TileId): void => {
-  emitAction<TileActionPayload>('action:BUILD_HOUSE', { tileId });
+  emitAction('action:BUILD_HOUSE', { tileId });
 };
 
 export const buildHotel = (tileId: TileId): void => {
-  emitAction<TileActionPayload>('action:BUILD_HOTEL', { tileId });
+  emitAction('action:BUILD_HOTEL', { tileId });
 };
 
 export const sellBuilding = (tileId: TileId): void => {
-  emitAction<TileActionPayload>('action:SELL_BUILDING', { tileId });
+  emitAction('action:SELL_BUILDING', { tileId });
 };
 
 export const mortgageProperty = (tileId: TileId): void => {
-  emitAction<TileActionPayload>('action:MORTGAGE', { tileId });
+  emitAction('action:MORTGAGE', { tileId });
 };
 
 export const unmortgageProperty = (tileId: TileId): void => {
-  emitAction<TileActionPayload>('action:UNMORTGAGE', { tileId });
+  emitAction('action:UNMORTGAGE', { tileId });
 };
 
 export const proposeTrade = (payload: ProposeTrade): void => {
@@ -131,15 +97,15 @@ export const proposeTrade = (payload: ProposeTrade): void => {
 };
 
 export const acceptTrade = (tradeId: string): void => {
-  emitAction<TradeDecisionPayload>('action:ACCEPT_TRADE', { tradeId });
+  emitAction('action:ACCEPT_TRADE', { tradeId });
 };
 
 export const rejectTrade = (tradeId: string): void => {
-  emitAction<TradeDecisionPayload>('action:REJECT_TRADE', { tradeId });
+  emitAction('action:REJECT_TRADE', { tradeId });
 };
 
 export const cancelTrade = (tradeId: string): void => {
-  emitAction<TradeDecisionPayload>('action:CANCEL_TRADE', { tradeId });
+  emitAction('action:CANCEL_TRADE', { tradeId });
 };
 
 export const usePropCard = (payload: UsePropCard): void => {

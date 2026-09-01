@@ -57,7 +57,7 @@ export function computeRent(
       return computeAirportRent(session, tile as AirportTile, owner);
 
     case TileType.TEMPLE:
-      return computeTemplePassRent(tile as TempleTile, owner);
+      return computeTemplePassRent(session, tile as TempleTile, owner);
 
     default:
       return { amount: 0, recipient: BANK_ID };
@@ -82,10 +82,10 @@ function computePropertyRent(
   // Get base rent
   let baseRent: Money;
   if (tile.buildingLevel > 0) {
-    baseRent = tile.rentByLevel[tile.buildingLevel - 1] ?? 0;
+    baseRent = tile.rentByLevel[tile.buildingLevel] ?? 0;
   } else {
     // Check for monopoly
-    const ownerOwnsAll = groupTiles.every(t => t.ownerId === owner.id);
+    const ownerOwnsAll = groupTiles.every(t => t.ownerId === owner.id && !t.isMortgaged);
     baseRent = ownerOwnsAll ? tile.baseRentWithMonopoly : tile.baseRent;
   }
 
@@ -138,13 +138,14 @@ function computeAirportRent(
 // ─── Temple pass-through rent ─────────────────────────────────────────────────
 
 function computeTemplePassRent(
+  session: GameSession,
   tile: TempleTile,
   owner: ReturnType<typeof requirePlayer>,
 ): RentResult {
   if (tile.isMortgaged) return { amount: 0, recipient: BANK_ID };
 
   const recipient = owner.inJail ? BANK_ID : owner.id;
-  return { amount: tile.passThruToll, recipient };
+  return { amount: session.config.templePassThruToll, recipient };
 }
 
 // ─── Group helpers ────────────────────────────────────────────────────────────
@@ -160,7 +161,7 @@ export function hasMonopoly(
   const groupTiles = session.board.filter(
     (t): t is PropertyTile => t.type === TileType.PROPERTY && t.colorGroup === colorGroup,
   );
-  return groupTiles.length > 0 && groupTiles.every(t => t.ownerId === playerId);
+  return groupTiles.length > 0 && groupTiles.every(t => t.ownerId === playerId && !t.isMortgaged);
 }
 
 /**

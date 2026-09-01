@@ -14,8 +14,11 @@
  *   - Prop cards destroyed
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DYING_RESCUE_AVAILABLE_ACTIONS = void 0;
 exports.enterDyingRescue = enterDyingRescue;
 exports.refreshDyingRescueActivity = refreshDyingRescueActivity;
+exports.buildDyingRescueDetail = buildDyingRescueDetail;
+exports.rescueDyingPlayer = rescueDyingPlayer;
 exports.declareBankruptcy = declareBankruptcy;
 exports.triggerWhaleFall = triggerWhaleFall;
 const GameSession_types_1 = require("../types/GameSession.types");
@@ -24,8 +27,21 @@ const Tile_types_1 = require("../types/Tile.types");
 const GameSession_1 = require("../state/GameSession");
 const StateMachine_1 = require("../state/StateMachine");
 const broadcast_1 = require("../socket/emitters/broadcast");
+const direct_1 = require("../socket/emitters/direct");
 const timerUtils_1 = require("../utils/timerUtils");
 const logger_1 = require("../utils/logger");
+const TurnFlow_1 = require("./TurnFlow");
+const TradeLifecycle_1 = require("./TradeLifecycle");
+const Trade_types_1 = require("../types/Trade.types");
+exports.DYING_RESCUE_AVAILABLE_ACTIONS = [
+    'SELL_BUILDING',
+    'MORTGAGE',
+    'PROPOSE_TRADE',
+    'ACCEPT_TRADE',
+    'REJECT_TRADE',
+    'CANCEL_TRADE',
+    'DECLARE_BANKRUPTCY',
+];
 // ─── Enter DYING_RESCUE ───────────────────────────────────────────────────────
 /**
  * Transition a player to DYING_RESCUE state.
@@ -34,10 +50,12 @@ const logger_1 = require("../utils/logger");
 function enterDyingRescue(session, playerId, bankruptcyType, creditorId, amountOwed, io) {
     const player = (0, GameSession_1.requirePlayer)(session, playerId);
     player.status = Player_types_1.PlayerStatus.DYING;
+    const startedAt = Date.now();
+    const rescueDeadlineAt = startedAt + session.config.dyingRescueTotalMs;
     session.dyingRescue = {
         playerId,
-        startedAt: Date.now(),
-        lastActionAt: Date.now(),
+        startedAt,
+        lastActionAt: startedAt,
         afkWarningSentAt: null,
     };
     session.pendingBankruptcy = { playerId, type: bankruptcyType, creditorId, amountOwed };
@@ -45,8 +63,14 @@ function enterDyingRescue(session, playerId, bankruptcyType, creditorId, amountO
     const payload = {
         playerId,
         rescueWindowMs: session.config.dyingRescueTotalMs,
+        rescueDeadlineAt,
+        phase: GameSession_types_1.TurnPhase.DYING_RESCUE,
     };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'PLAYER_DYING', payload);
+    const detail = buildDyingRescueDetail(session, playerId);
+    if (detail) {
+        (0, direct_1.emitToPlayer)(io, playerId, 'DYING_RESCUE_DETAIL', detail);
+    }
     // AFK warning timer (fires 2 minutes before kick)
     (0, timerUtils_1.scheduleTimer)(timerUtils_1.TimerNS.dyingAfk(session.id, playerId), session.config.dyingRescueAfkWarningMs, () => {
         if (session.dyingRescue?.playerId === playerId) {
@@ -64,12 +88,49 @@ function enterDyingRescue(session, playerId, bankruptcyType, creditorId, amountO
     }, `Rescue timeout for player ${playerId}`);
     logger_1.logger.info({ roomId: session.id, playerId, bankruptcyType }, 'Player entered dying rescue');
 }
-// ─── Rescue actions reset the AFK timer ───────────────────────────────────────
-/** Call this whenever the dying player takes a valid action in DYING_RESCUE. */
+// ─── Rescue activity tracking ─────────────────────────────────────────────────
+/** Track valid activity without extending the fixed rescue deadline. */
 function refreshDyingRescueActivity(session, playerId) {
     if (session.dyingRescue?.playerId === playerId) {
         session.dyingRescue.lastActionAt = Date.now();
     }
+}
+function buildDyingRescueDetail(session, playerId) {
+    const rescue = session.dyingRescue;
+    const pending = session.pendingBankruptcy;
+    if (!rescue || !pending || rescue.playerId !== playerId || pending.playerId !== playerId) {
+        return null;
+    }
+    return {
+        amountOwed: pending.amountOwed,
+        creditorId: pending.creditorId,
+        bankruptcyType: pending.type,
+        rescueDeadlineAt: rescue.startedAt + session.config.dyingRescueTotalMs,
+        availableActions: [...exports.DYING_RESCUE_AVAILABLE_ACTIONS],
+    };
+}
+/** Settle a rescue debt after the player raises enough cash. */
+function rescueDyingPlayer(session, playerId, io) {
+    const pending = session.pendingBankruptcy;
+    if (!pending || pending.playerId !== playerId)
+        return false;
+    const player = (0, GameSession_1.requirePlayer)(session, playerId);
+    if (player.cash < pending.amountOwed)
+        return false;
+    cancelDyingTimers(session, playerId);
+    const amount = pending.amountOwed;
+    if (amount > 0) {
+        (0, GameSession_1.cashChange)(session, playerId, -amount, 'DYING_RESCUE_PAYMENT', io);
+        if (pending.creditorId) {
+            (0, GameSession_1.cashChange)(session, pending.creditorId, amount, `DYING_RESCUE_PAYMENT_FROM_${playerId}`, io);
+        }
+    }
+    player.status = Player_types_1.PlayerStatus.ACTIVE;
+    session.dyingRescue = null;
+    session.pendingBankruptcy = null;
+    const payload = { playerId };
+    (0, broadcast_1.broadcastToRoom)(io, session.id, 'PLAYER_RESCUED', payload);
+    return true;
 }
 // ─── Declare bankruptcy (voluntary) ─────────────────────────────────────────
 function declareBankruptcy(session, playerId, io) {
@@ -77,7 +138,7 @@ function declareBankruptcy(session, playerId, io) {
     if (!pending || pending.playerId !== playerId)
         return;
     cancelDyingTimers(session, playerId);
-    resolveBankruptcy(session, pending.type, pending.creditorId, io);
+    resolveBankruptcy(session, playerId, pending.type, pending.creditorId, pending.amountOwed, io);
 }
 // ─── Whale-fall (involuntary) ─────────────────────────────────────────────────
 function triggerWhaleFall(session, playerId, reason, io) {
@@ -85,23 +146,23 @@ function triggerWhaleFall(session, playerId, reason, io) {
     const payload = { playerId, reason };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'WHALE_FALL', payload);
     // Whale-fall is always TYPE_A
-    resolveBankruptcy(session, GameSession_types_1.BankruptcyType.TYPE_A, null, io);
+    resolveBankruptcy(session, playerId, GameSession_types_1.BankruptcyType.TYPE_A, null, 0, io);
 }
 // ─── Resolution ──────────────────────────────────────────────────────────────
-function resolveBankruptcy(session, type, creditorId, io) {
-    const pending = session.pendingBankruptcy;
-    if (!pending)
-        return;
-    const playerId = pending.playerId;
+function resolveBankruptcy(session, playerId, type, creditorId, amountOwed, io) {
     const player = (0, GameSession_1.requirePlayer)(session, playerId);
+    const wasCurrentTurn = session.playerOrder[session.currentPlayerIndex] === playerId;
+    const wasDyingRescuePlayer = session.dyingRescue?.playerId === playerId;
+    const hadMatchingPendingBankruptcy = session.pendingBankruptcy?.playerId === playerId;
+    (0, TradeLifecycle_1.voidTradesInvolvingPlayer)(session, playerId, Trade_types_1.TradeVoidReason.PLAYER_BANKRUPT, io);
+    // TYPE_B debts are paid from real cash plus the proceeds of liquidating
+    // buildings and unmortgaged land. TYPE_A assets are returned to the bank
+    // without creating cash because those debts have no player creditor.
+    liquidateOwnedAssets(session, playerId, type === GameSession_types_1.BankruptcyType.TYPE_B && creditorId !== null, io);
     if (type === GameSession_types_1.BankruptcyType.TYPE_B && creditorId) {
-        // Transfer min(assets, amountOwed) to creditor
-        const totalAssets = liquidatableValue(session, playerId);
-        const transferAmount = Math.min(totalAssets, pending.amountOwed);
+        const transferAmount = Math.min(player.cash, amountOwed);
         if (transferAmount > 0) {
-            // Destroy player cash first
-            player.cash = 0;
-            // Then give creditor the calculated amount
+            (0, GameSession_1.cashChange)(session, playerId, -transferAmount, 'BANKRUPTCY_LIQUIDATION', io);
             (0, GameSession_1.cashChange)(session, creditorId, transferAmount, `BANKRUPTCY_TRANSFER_FROM_${playerId}`, io);
         }
     }
@@ -123,22 +184,28 @@ function resolveBankruptcy(session, type, creditorId, io) {
             (0, broadcast_1.broadcastToRoom)(io, session.id, 'PROPERTY_FREED', freePayload);
         }
     }
-    // Destroy remaining cash
-    player.cash = 0;
+    // Destroy remaining cash through the authoritative mutation path.
+    if (player.cash !== 0) {
+        (0, GameSession_1.cashChange)(session, playerId, -player.cash, 'BANKRUPTCY_CASH_DESTROYED', io);
+    }
     // Destroy prop cards
     player.propCards = [];
+    (0, GameSession_1.syncPropCards)(session, playerId, io);
     // Mark bankrupt
     player.status = Player_types_1.PlayerStatus.BANKRUPT;
-    session.dyingRescue = null;
-    session.pendingBankruptcy = null;
+    if (wasDyingRescuePlayer) {
+        session.dyingRescue = null;
+    }
+    if (hadMatchingPendingBankruptcy) {
+        session.pendingBankruptcy = null;
+    }
     const bankruptPayload = {
         playerId,
         bankruptType: type,
         creditorId: creditorId ?? null,
     };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'PLAYER_BANKRUPT', bankruptPayload);
-    // Remove from player order
-    session.playerOrder = session.playerOrder.filter(id => id !== playerId);
+    removePlayerFromOrder(session, playerId, wasCurrentTurn);
     logger_1.logger.info({ roomId: session.id, playerId, type }, 'Bankruptcy resolved');
     // Check if game is over
     const winnerId = (0, GameSession_1.checkVictory)(session);
@@ -146,8 +213,13 @@ function resolveBankruptcy(session, type, creditorId, io) {
         endGame(session, [winnerId], io);
         return;
     }
-    // Advance to next turn
-    StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.TURN_TRANSITIONING);
+    // A non-current player can whale-fall without interrupting the active turn.
+    if (wasCurrentTurn || wasDyingRescuePlayer) {
+        session.status = GameSession_types_1.GameStatus.IN_PROGRESS;
+        session.pausedAt = null;
+        session.disconnectedCurrentPlayerId = null;
+        (0, TurnFlow_1.advanceToNextTurn)(session, io);
+    }
 }
 // ─── Game over ────────────────────────────────────────────────────────────────
 function endGame(session, winnerIds, io) {
@@ -156,6 +228,7 @@ function endGame(session, winnerIds, io) {
     session.finishedAt = Date.now();
     session.winnerIds = winnerIds;
     (0, timerUtils_1.cancelAllTimers)(session.id);
+    (0, TradeLifecycle_1.voidAllPendingTrades)(session, Trade_types_1.TradeVoidReason.GAME_ENDED, io);
     const standings = session.playerOrder.map((pid, i) => ({ playerId: pid, rank: i + 1 }));
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'GAME_OVER', { winnerIds, standings });
     logger_1.logger.info({ roomId: session.id, winnerIds }, 'Game over');
@@ -164,17 +237,41 @@ function endGame(session, winnerIds, io) {
 function cancelDyingTimers(session, playerId) {
     (0, timerUtils_1.cancelAllTimers)(`${session.id}:${playerId}`);
 }
-/** Sum all convertible assets: cash + mortgage values of unbuilt properties. */
-function liquidatableValue(session, playerId) {
-    const player = (0, GameSession_1.requirePlayer)(session, playerId);
-    let total = player.cash;
+function removePlayerFromOrder(session, playerId, wasCurrentTurn) {
+    const removedIndex = session.playerOrder.indexOf(playerId);
+    if (removedIndex < 0)
+        return;
+    session.playerOrder.splice(removedIndex, 1);
+    if (session.playerOrder.length === 0) {
+        session.currentPlayerIndex = 0;
+    }
+    else if (wasCurrentTurn) {
+        session.currentPlayerIndex = (removedIndex - 1 + session.playerOrder.length) % session.playerOrder.length;
+    }
+    else if (removedIndex < session.currentPlayerIndex) {
+        session.currentPlayerIndex--;
+    }
+}
+function liquidateOwnedAssets(session, playerId, realizeProceeds, io) {
+    let proceeds = 0;
     for (const tile of session.board) {
-        if ('ownerId' in tile && tile.ownerId === playerId && 'mortgageValue' in tile) {
-            if (!tile.isMortgaged) {
-                total += tile.mortgageValue;
+        if (!('ownerId' in tile) || tile.ownerId !== playerId)
+            continue;
+        if (tile.type === Tile_types_1.TileType.PROPERTY) {
+            if (realizeProceeds && tile.buildingLevel > 0) {
+                proceeds += Math.floor(tile.buildCost * tile.buildingLevel * session.config.buildingRefundRate);
             }
+            tile.buildingLevel = 0;
+        }
+        if ('isMortgaged' in tile) {
+            if (realizeProceeds && !tile.isMortgaged && 'mortgageValue' in tile) {
+                proceeds += tile.mortgageValue;
+            }
+            tile.isMortgaged = true;
         }
     }
-    return total;
+    if (realizeProceeds && proceeds > 0) {
+        (0, GameSession_1.cashChange)(session, playerId, proceeds, 'BANKRUPTCY_ASSET_LIQUIDATION', io);
+    }
 }
 //# sourceMappingURL=BankruptcyResolver.js.map

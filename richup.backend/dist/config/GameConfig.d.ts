@@ -43,5 +43,6 @@ export declare const CASINO_TIERS: readonly {
     loseWeight: number;
     breakEvenWeight: number;
     winWeight: number;
+    winMultiplier: number;
 }[];
 //# sourceMappingURL=GameConfig.d.ts.map

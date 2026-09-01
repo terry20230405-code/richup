@@ -54,6 +54,7 @@ function usePropCard(session, playerId, cardId, cardType, params, io) {
     }
     // Remove used card
     player.propCards.splice(cardIndex, 1);
+    (0, GameSession_1.syncPropCards)(session, playerId, io);
     // Broadcast usage (type revealed, target may be revealed)
     const payload = {
         playerId,
@@ -69,6 +70,9 @@ function handleForcedTrade(session, buyerId, params, io) {
     const { targetPlayerId, targetTileId } = params;
     if (!targetPlayerId || targetTileId === undefined) {
         throw new errors_1.RuleViolationError('FORCED_TRADE requires targetPlayerId and targetTileId');
+    }
+    if (targetPlayerId === buyerId) {
+        throw new errors_1.RuleViolationError('Cannot force-trade your own tile');
     }
     const tile = session.board[targetTileId];
     if (!tile)
@@ -114,6 +118,9 @@ function handlePlunder(session, plunderer, params, io) {
     const { targetPlayerId } = params;
     if (!targetPlayerId)
         throw new errors_1.RuleViolationError('PLUNDER requires targetPlayerId');
+    if (targetPlayerId === plunderer) {
+        throw new errors_1.RuleViolationError('Cannot plunder yourself');
+    }
     const target = (0, GameSession_1.requirePlayer)(session, targetPlayerId);
     // max(0, floor(target.cash / 2)) — 0 if target has no cash
     const stealAmount = Math.max(0, Math.floor(target.cash / 2));

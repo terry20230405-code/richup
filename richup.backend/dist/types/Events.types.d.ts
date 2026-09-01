@@ -12,17 +12,22 @@
  *   ✓ CASH_UPDATED is directed (private) only
  */
 import type { PlayerId, TileId, Money, DiceValue, CasinoOutcome, PlayerOrBank } from './Common.types';
-import type { TileType } from './Tile.types';
-import type { PropCardType } from './PropCard.types';
-import type { TurnPhase, BankruptcyType } from './GameSession.types';
+import type { PlayerStatus } from './Player.types';
+import type { BuildingLevel, TilePublicView, TileType } from './Tile.types';
+import type { PropCard, PropCardType } from './PropCard.types';
+import type { TurnPhase, BankruptcyType, GameStatus } from './GameSession.types';
 import type { AuctionPublicView } from './Auction.types';
-import type { TradeOffer, TradePublicView } from './Trade.types';
+import type { TradeOffer, TradePublicView, TradeVoidReason } from './Trade.types';
 import type { PlayerSelfView, PlayerPublicView } from './Player.types';
 export interface C2S_RollDice {
 }
 export interface C2S_EndTurn {
 }
 export interface C2S_DeclareBankruptcy {
+}
+export interface C2S_StartGame {
+}
+export interface C2S_PayTax {
 }
 export interface C2S_BuyProperty {
 }
@@ -52,8 +57,13 @@ export interface C2S_Unmortgage {
 }
 export interface C2S_ProposeTrade {
     responderId: PlayerId;
-    proposerOffer: TradeOffer;
-    responderOffer: TradeOffer;
+    proposerOffer: C2S_TradeOffer;
+    responderOffer: C2S_TradeOffer;
+}
+export interface C2S_TradeOffer {
+    cash?: Money;
+    tileIds: TileId[];
+    propCardIds?: string[];
 }
 export interface C2S_AcceptTrade {
     tradeId: string;
@@ -84,8 +94,36 @@ export interface C2S_Reconnect {
     sessionToken: string;
     roomId: string;
 }
+/** Compile-time action contract. Every client action has exactly one payload. */
+export interface ClientActionPayloads {
+    'action:START_GAME': C2S_StartGame;
+    'action:ROLL_DICE': C2S_RollDice;
+    'action:ROLL_FOR_DOUBLE': C2S_RollForDouble;
+    'action:END_TURN': C2S_EndTurn;
+    'action:DECLARE_BANKRUPTCY': C2S_DeclareBankruptcy;
+    'action:BUY_PROPERTY': C2S_BuyProperty;
+    'action:CHOOSE_AUCTION': C2S_ChooseAuction;
+    'action:SKIP_PURCHASE': C2S_SkipPurchase;
+    'action:TEMPLE_PRAY': C2S_TemplePray;
+    'action:CASINO_BET': C2S_CasinoBet;
+    'action:PAY_BAIL': C2S_PayBail;
+    'action:PAY_TAX': C2S_PayTax;
+    'action:AUCTION_BID': C2S_AuctionBid;
+    'action:AUCTION_PASS': C2S_AuctionPass;
+    'action:BUILD_HOUSE': C2S_BuildHouse;
+    'action:BUILD_HOTEL': C2S_BuildHotel;
+    'action:SELL_BUILDING': C2S_SellBuilding;
+    'action:MORTGAGE': C2S_Mortgage;
+    'action:UNMORTGAGE': C2S_Unmortgage;
+    'action:PROPOSE_TRADE': C2S_ProposeTrade;
+    'action:ACCEPT_TRADE': C2S_AcceptTrade;
+    'action:REJECT_TRADE': C2S_RejectTrade;
+    'action:CANCEL_TRADE': C2S_CancelTrade;
+    'action:USE_PROP_CARD': C2S_UsePropCard;
+    'action:RECONNECT': C2S_Reconnect;
+}
 export interface S2C_MapGenerated {
-    board: object[];
+    board: TilePublicView[];
     playerOrder: PlayerId[];
 }
 export interface S2C_TurnStarted {
@@ -96,6 +134,16 @@ export interface S2C_TurnStarted {
 }
 export interface S2C_TurnEnded {
     playerId: PlayerId;
+}
+/**
+ * Broadcast when a landing auto-resolves straight to END_TURN_PENDING with no
+ * player action required (empty lot, own property, just-visiting jail, surprise,
+ * temple with no effect, immunity, zero rent). Lets the client show End Turn.
+ */
+export interface S2C_TurnReady {
+    playerId: PlayerId;
+    phase: TurnPhase;
+    availableActions: string[];
 }
 export interface S2C_DiceRolled {
     playerId: PlayerId;
@@ -130,6 +178,7 @@ export interface S2C_TileEvent {
     tileType: TileType;
     phase: TurnPhase;
     availableActions: string[];
+    taxAmount?: Money;
 }
 export interface S2C_PropertyPurchased {
     tileId: TileId;
@@ -155,19 +204,21 @@ export interface S2C_BuildingBuilt {
     tileId: TileId;
     ownerId: PlayerId;
     cost: Money;
-    newBuildingLevel: number;
+    newBuildingLevel: BuildingLevel;
 }
 export interface S2C_BuildingSold {
     tileId: TileId;
     ownerId: PlayerId;
     refund: Money;
-    newBuildingLevel: number;
+    newBuildingLevel: BuildingLevel;
 }
 export interface S2C_RentCharged {
     from: PlayerId;
     to: PlayerOrBank;
     tileId: TileId;
     amount: Money;
+    phase?: TurnPhase;
+    availableActions?: string[];
 }
 export interface S2C_TaxPaid {
     playerId: PlayerId;
@@ -178,6 +229,8 @@ export interface S2C_CasinoResult {
     betAmount: Money;
     outcome: CasinoOutcome;
     cashDelta: Money;
+    phase: TurnPhase;
+    availableActions: string[];
 }
 export interface S2C_SurpriseResult {
     playerId: PlayerId;
@@ -205,6 +258,10 @@ export interface S2C_AuctionPlayerPassed {
     auctionId: string;
     passedPlayerId: PlayerId;
     remainingActiveCount: number;
+    activePlayerIds: PlayerId[];
+    passedPlayerIds: PlayerId[];
+    currentLeaderId: PlayerId | null;
+    currentBid: Money;
 }
 export interface S2C_AuctionHammerDown {
     auctionId: string;
@@ -221,9 +278,7 @@ export interface S2C_AuctionBidCancelled {
     bidderId: PlayerId;
     reason: string;
 }
-export interface S2C_TradeProposed {
-    trade: TradePublicView;
-}
+export type S2C_TradeProposed = TradePublicView;
 export interface S2C_TradeAccepted {
     tradeId: string;
 }
@@ -244,7 +299,7 @@ export interface S2C_TradeCompleted {
 }
 export interface S2C_TradeVoided {
     tradeId: string;
-    reason: string;
+    reason: TradeVoidReason;
 }
 export interface S2C_PropCardUsed {
     playerId: PlayerId;
@@ -254,6 +309,10 @@ export interface S2C_PropCardUsed {
 }
 export interface S2C_PropCardDrawn {
     playerId: PlayerId;
+}
+/** Directed private hand snapshot. Never broadcast this payload to the room. */
+export interface S2C_PropCardsUpdated {
+    propCards: PropCard[];
 }
 export interface S2C_ImmunityUsed {
     playerId: PlayerId;
@@ -276,9 +335,25 @@ export interface S2C_PlunderExecuted {
 export interface S2C_JailAutoReleased {
     playerId: PlayerId;
 }
+export interface S2C_JailReleased {
+    playerId: PlayerId;
+}
 export interface S2C_PlayerDying {
     playerId: PlayerId;
     rescueWindowMs: number;
+    rescueDeadlineAt: number;
+    phase: TurnPhase.DYING_RESCUE;
+}
+export interface DyingRescuePublicView {
+    playerId: PlayerId;
+    rescueDeadlineAt: number;
+}
+export interface S2C_DyingRescueDetail {
+    amountOwed: Money;
+    creditorId: PlayerId | null;
+    bankruptcyType: BankruptcyType;
+    rescueDeadlineAt: number;
+    availableActions: string[];
 }
 export interface S2C_PlayerRescued {
     playerId: PlayerId;
@@ -299,6 +374,7 @@ export interface S2C_WhaleFall {
 export interface S2C_GamePaused {
     disconnectedPlayerId: PlayerId;
     reconnectWindowSeconds: number;
+    reconnectDeadlineAt: number;
 }
 export interface S2C_GameResumed {
     currentTurnPlayerId: PlayerId;
@@ -307,9 +383,15 @@ export interface S2C_GameResumed {
 export interface S2C_PlayerDisconnected {
     playerId: PlayerId;
     afkWarningMs: number;
+    status: PlayerStatus;
 }
 export interface S2C_PlayerReconnected {
     playerId: PlayerId;
+    status: PlayerStatus;
+}
+export interface S2C_LobbyStateUpdated {
+    hostId: PlayerId;
+    players: PlayerPublicView[];
 }
 export interface S2C_GameOver {
     winnerIds: PlayerId[];
@@ -325,17 +407,25 @@ export interface S2C_CashUpdated {
 }
 export interface S2C_ReconnectSuccess {
     selfView: PlayerSelfView;
+    rescueDetail: S2C_DyingRescueDetail | null;
+    tradeDetails: S2C_TradeDetail[];
     gameSnapshot: {
         roomId: string;
-        status: string;
+        hostId: PlayerId;
+        status: GameStatus;
         currentPhase: TurnPhase;
         currentTurnPlayerId: PlayerId | null;
         turnNumber: number;
         playerOrder: PlayerId[];
-        board: object[];
+        board: TilePublicView[];
         players: PlayerPublicView[];
         activeAuction: AuctionPublicView | null;
         pendingTrades: TradePublicView[];
+        dyingRescue: DyingRescuePublicView | null;
+        pause: {
+            disconnectedPlayerId: PlayerId;
+            reconnectDeadlineAt: number;
+        } | null;
         winners: PlayerId[];
     };
 }
@@ -362,5 +452,73 @@ export interface S2C_TradeDetail {
 export interface S2C_AuditResult {
     requestedByPlayerId: PlayerId;
     playerCashMap: Record<PlayerId, Money>;
+}
+/**
+ * Compile-time server event contract used by every broadcast/direct emitter.
+ * Runtime payload validation remains mandatory for untrusted client input.
+ */
+export interface ServerEventPayloads {
+    MAP_GENERATED: S2C_MapGenerated;
+    TURN_STARTED: S2C_TurnStarted;
+    TURN_ENDED: S2C_TurnEnded;
+    TURN_READY: S2C_TurnReady;
+    DICE_ROLLED: S2C_DiceRolled;
+    DICE_OVERRIDE: S2C_DiceOverride;
+    PLAYER_MOVED: S2C_PlayerMoved;
+    START_PASSED: S2C_StartPassed;
+    START_LANDED: S2C_StartLanded;
+    TILE_EVENT: S2C_TileEvent;
+    PROPERTY_PURCHASED: S2C_PropertyPurchased;
+    PROPERTY_MORTGAGED: S2C_PropertyMortgaged;
+    PROPERTY_UNMORTGAGED: S2C_PropertyUnmortgaged;
+    PROPERTY_FREED: S2C_PropertyFreed;
+    BUILDING_BUILT: S2C_BuildingBuilt;
+    BUILDING_SOLD: S2C_BuildingSold;
+    RENT_CHARGED: S2C_RentCharged;
+    TAX_PAID: S2C_TaxPaid;
+    CASINO_RESULT: S2C_CasinoResult;
+    SURPRISE_RESULT: S2C_SurpriseResult;
+    SURPRISE_RAMPAGE: S2C_SurpriseRampage;
+    TEMPLE_LIT: S2C_TempleLit;
+    AUCTION_STARTED: S2C_AuctionStarted;
+    AUCTION_BID_PLACED: S2C_AuctionBidPlaced;
+    AUCTION_PLAYER_PASSED: S2C_AuctionPlayerPassed;
+    AUCTION_HAMMER_DOWN: S2C_AuctionHammerDown;
+    AUCTION_NO_SALE: S2C_AuctionNoSale;
+    AUCTION_BID_CANCELLED: S2C_AuctionBidCancelled;
+    TRADE_PROPOSED: S2C_TradeProposed;
+    TRADE_ACCEPTED: S2C_TradeAccepted;
+    TRADE_REJECTED: S2C_TradeRejected;
+    TRADE_CANCELLED: S2C_TradeCancelled;
+    TRADE_COMPLETED: S2C_TradeCompleted;
+    TRADE_VOIDED: S2C_TradeVoided;
+    PROP_CARD_USED: S2C_PropCardUsed;
+    PROP_CARD_DRAWN: S2C_PropCardDrawn;
+    PROP_CARDS_UPDATED: S2C_PropCardsUpdated;
+    IMMUNITY_USED: S2C_ImmunityUsed;
+    PRICE_HIKE_EXPIRED: S2C_PriceHikeExpired;
+    FORCED_TRADE_EXECUTED: S2C_ForcedTradeExecuted;
+    PLUNDER_EXECUTED: S2C_PlunderExecuted;
+    JAIL_AUTO_RELEASED: S2C_JailAutoReleased;
+    JAIL_RELEASED: S2C_JailReleased;
+    PLAYER_DYING: S2C_PlayerDying;
+    DYING_RESCUE_DETAIL: S2C_DyingRescueDetail;
+    PLAYER_RESCUED: S2C_PlayerRescued;
+    DYING_RESCUE_AFK_WARNING: S2C_DyingRescueAfkWarning;
+    PLAYER_BANKRUPT: S2C_PlayerBankrupt;
+    WHALE_FALL: S2C_WhaleFall;
+    GAME_PAUSED: S2C_GamePaused;
+    GAME_RESUMED: S2C_GameResumed;
+    PLAYER_DISCONNECTED: S2C_PlayerDisconnected;
+    PLAYER_RECONNECTED: S2C_PlayerReconnected;
+    LOBBY_STATE_UPDATED: S2C_LobbyStateUpdated;
+    GAME_OVER: S2C_GameOver;
+    CASH_UPDATED: S2C_CashUpdated;
+    RECONNECT_SUCCESS: S2C_ReconnectSuccess;
+    AUCTION_BID_REJECTED: S2C_AuctionBidRejected;
+    ACTION_REJECTED: S2C_ActionRejected;
+    OPERATION_BLOCKED: S2C_OperationBlocked;
+    TRADE_DETAIL: S2C_TradeDetail;
+    AUDIT_RESULT: S2C_AuditResult;
 }
 //# sourceMappingURL=Events.types.d.ts.map

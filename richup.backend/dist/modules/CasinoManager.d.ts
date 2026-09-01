@@ -11,5 +11,5 @@ import type { GameSession } from '../types/GameSession.types';
  * Process a casino bet for the landing player.
  * Emits CASINO_RESULT to all players.
  */
-export declare function handleCasinoBet(session: GameSession, playerId: PlayerId, betAmount: Money, io: Server): void;
+export declare function handleCasinoBet(session: GameSession, playerId: PlayerId, tileId: number, betAmount: Money, io: Server): void;
 //# sourceMappingURL=CasinoManager.d.ts.map

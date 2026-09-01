@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.playerTurnGuard = playerTurnGuard;
 const GameSession_1 = require("../../state/GameSession");
+const direct_1 = require("../emitters/direct");
 /**
  * Verify the socket sender is the current turn player.
  * If not, emits ACTION_REJECTED and returns false.
@@ -14,7 +15,7 @@ function playerTurnGuard(socket, session, senderId, action) {
             reason: `It is not your turn`,
             code: 'NOT_YOUR_TURN',
         };
-        socket.emit('ACTION_REJECTED', payload);
+        (0, direct_1.emitToSocket)(socket, 'ACTION_REJECTED', payload);
         return false;
     }
     return true;

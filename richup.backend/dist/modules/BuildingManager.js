@@ -21,8 +21,7 @@ const broadcast_1 = require("../socket/emitters/broadcast");
 const errors_1 = require("../utils/errors");
 const logger_1 = require("../utils/logger");
 const MAX_HOUSE_LEVEL = 4;
-const HOTEL_LEVEL = 5; // level 5 = 1 hotel; 6 = 2 hotels; 7 = 3 hotels per PRD
-const MAX_LEVEL = 7;
+const MAX_LEVEL = 6;
 // ─── Build ────────────────────────────────────────────────────────────────────
 /** Build one house on the specified tile. */
 function buildHouse(session, playerId, tileId, io) {
@@ -33,13 +32,26 @@ function buildHouse(session, playerId, tileId, io) {
     if (tile.buildingLevel >= MAX_HOUSE_LEVEL) {
         throw new errors_1.RuleViolationError('Must build a hotel, not more houses');
     }
+    if (tile.buildingLevel >= MAX_LEVEL) {
+        throw new errors_1.RuleViolationError('Already at maximum building level');
+    }
+    // Even-building rule: must build on the lowest-level property in the group first.
+    {
+        const groupTiles = session.board.filter((t) => t.type === Tile_types_1.TileType.PROPERTY &&
+            t.colorGroup === tile.colorGroup &&
+            t.ownerId === playerId);
+        const minLevel = Math.min(...groupTiles.map(t => t.buildingLevel));
+        if (tile.buildingLevel > minLevel) {
+            throw new errors_1.RuleViolationError(`Even-building rule: must build on properties with fewer buildings first`);
+        }
+    }
     (0, RentCalculator_1.validateEvenBuilding)(session, playerId, tile.colorGroup);
-    const cost = buildCost(tile.buildingLevel + 1);
+    const cost = tile.buildCost;
     const player = (0, GameSession_1.requirePlayer)(session, playerId);
     if (player.cash < cost)
         throw new errors_1.InsufficientFundsError(playerId, cost, player.cash);
     (0, AuctionManager_1.assertNotBidLocked)(session, playerId, cost);
-    tile.buildingLevel++;
+    tile.buildingLevel = (tile.buildingLevel + 1);
     (0, GameSession_1.cashChange)(session, playerId, -cost, 'BUILD_HOUSE', io);
     const payload = {
         tileId,
@@ -50,7 +62,7 @@ function buildHouse(session, playerId, tileId, io) {
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'BUILDING_BUILT', payload);
     logger_1.logger.debug({ roomId: session.id, playerId, tileId, level: tile.buildingLevel }, 'House built');
 }
-/** Build a hotel (upgrade from level 4 → 5, or 5→6, 6→7). */
+/** Upgrade beyond houses (level 4 → 5 → 6). */
 function buildHotel(session, playerId, tileId, io) {
     const tile = requireOwnedProperty(session, tileId, playerId);
     if (!(0, RentCalculator_1.hasMonopoly)(session, playerId, tile.colorGroup)) {
@@ -62,13 +74,23 @@ function buildHotel(session, playerId, tileId, io) {
     if (tile.buildingLevel >= MAX_LEVEL) {
         throw new errors_1.RuleViolationError('Already at maximum building level');
     }
+    // Even-building rule: must build on the lowest-level property in the group first.
+    {
+        const groupTiles = session.board.filter((t) => t.type === Tile_types_1.TileType.PROPERTY &&
+            t.colorGroup === tile.colorGroup &&
+            t.ownerId === playerId);
+        const minLevel = Math.min(...groupTiles.map(t => t.buildingLevel));
+        if (tile.buildingLevel > minLevel) {
+            throw new errors_1.RuleViolationError(`Even-building rule: must build on properties with fewer buildings first`);
+        }
+    }
     (0, RentCalculator_1.validateEvenBuilding)(session, playerId, tile.colorGroup);
-    const cost = buildCost(tile.buildingLevel + 1);
+    const cost = tile.buildCost;
     const player = (0, GameSession_1.requirePlayer)(session, playerId);
     if (player.cash < cost)
         throw new errors_1.InsufficientFundsError(playerId, cost, player.cash);
     (0, AuctionManager_1.assertNotBidLocked)(session, playerId, cost);
-    tile.buildingLevel++;
+    tile.buildingLevel = (tile.buildingLevel + 1);
     (0, GameSession_1.cashChange)(session, playerId, -cost, 'BUILD_HOTEL', io);
     const payload = {
         tileId,
@@ -83,8 +105,20 @@ function sellBuilding(session, playerId, tileId, io) {
     const tile = requireOwnedProperty(session, tileId, playerId);
     if (tile.buildingLevel === 0)
         throw new errors_1.RuleViolationError('No buildings to sell');
-    const refund = Math.floor(buildCost(tile.buildingLevel) * session.config.buildingRefundRate);
-    tile.buildingLevel--;
+    // Even-building rule for downgrade: must sell from the highest-level property first.
+    {
+        const groupTiles = session.board.filter((t) => t.type === Tile_types_1.TileType.PROPERTY &&
+            t.colorGroup === tile.colorGroup &&
+            t.ownerId === playerId);
+        if (groupTiles.length > 0) {
+            const maxLevel = Math.max(...groupTiles.map(t => t.buildingLevel));
+            if (tile.buildingLevel < maxLevel) {
+                throw new errors_1.RuleViolationError(`Even-building rule: must sell buildings from the most-developed property first`);
+            }
+        }
+    }
+    const refund = Math.floor(tile.buildCost * session.config.buildingRefundRate);
+    tile.buildingLevel = (tile.buildingLevel - 1);
     (0, GameSession_1.cashChange)(session, playerId, refund, 'SELL_BUILDING', io);
     const payload = {
         tileId,
@@ -136,13 +170,5 @@ function requireOwnedProperty(session, tileId, playerId) {
     if (prop.ownerId !== playerId)
         throw new errors_1.RuleViolationError('You do not own this tile');
     return prop;
-}
-/**
- * Build cost per level — placeholder values.
- * Will be balanced in PRD Phase 2 using per-group tables.
- */
-function buildCost(_level) {
-    // All placeholder — real values driven by tile's colorGroup
-    return 1000;
 }
 //# sourceMappingURL=BuildingManager.js.map

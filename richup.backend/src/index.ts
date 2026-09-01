@@ -9,7 +9,7 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import healthRouter from './routes/health.routes';
-import lobbyRouter from './routes/lobby.routes';
+import { createLobbyRouter } from './routes/lobby.routes';
 import { registerSocketEvents } from './socket/SocketEventRouter';
 import {
   getSession,
@@ -26,7 +26,6 @@ app.use(cors());
 app.use(express.json());
 
 app.use('/api/v1', healthRouter);
-app.use('/api/v1', lobbyRouter);
 
 // ─── HTTP + Socket.io server ──────────────────────────────────────────────────
 
@@ -34,6 +33,8 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: '*' },
 });
+
+app.use('/api/v1', createLobbyRouter(io));
 
 // ─── Socket.io connection handler ────────────────────────────────────────────
 
@@ -74,7 +75,7 @@ io.on('connection', (socket) => {
 
 const PORT = Number(process.env.PORT ?? 3000);
 httpServer.listen(PORT, () => {
-  logger.info({ port: PORT }, '《现代大亨》server listening');
+  logger.info({ port: PORT }, 'Modern Tycoon server listening');
 });
 
 export { io };

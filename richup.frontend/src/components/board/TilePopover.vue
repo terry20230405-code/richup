@@ -99,45 +99,59 @@
         <p class="tp-description">{{ specialDescription }}</p>
       </template>
 
-      <!-- ── Build actions (monopoly owner during their turn) ─── -->
-      <div v-if="showBuildActions" class="tp-build-section">
-        <p class="tp-section-title">Build Actions</p>
-        <div class="tp-build-row">
+      <!-- Property management lives on the tile card so the board remains the single source of action. -->
+      <div v-if="showManagementActions" class="tp-build-section">
+        <p class="tp-section-title">Property Actions</p>
+
+        <div v-if="tile.type === 'PROPERTY'" class="tp-build-row tp-build-row--management">
           <button
-            v-if="(tile.buildingLevel ?? 0) < 6"
-            class="tp-btn tp-btn--upgrade"
+            class="tp-btn tp-icon-btn tp-btn--upgrade"
             type="button"
+            aria-label="Upgrade property"
+            :disabled="!canUpgrade"
+            :title="upgradeDisabledReason"
             @click="handleUpgrade"
           >
-            Upgrade (${{ tile.buildCost ?? '?' }})
+            <span aria-hidden="true">↑</span>
           </button>
           <button
-            v-if="(tile.buildingLevel ?? 0) > 0"
-            class="tp-btn tp-btn--downgrade"
+            class="tp-btn tp-icon-btn tp-btn--downgrade"
             type="button"
+            aria-label="Downgrade property"
+            :disabled="!canLiquidate || (tile.buildingLevel ?? 0) === 0"
+            :title="canLiquidate ? 'Sell one building for rescue cash.' : 'Selling is available during your turn or rescue.'"
             @click="handleDowngrade"
           >
-            Sell / Downgrade
+            <span aria-hidden="true">↓</span>
           </button>
         </div>
-      </div>
 
-      <!-- ── Mortgage actions (owner during their turn) ─────── -->
-      <div v-if="showMortgageActions" class="tp-build-section">
-        <p class="tp-section-title">Mortgage</p>
-        <div class="tp-build-row">
+        <p
+          v-if="tile.type === 'PROPERTY' && !hasMonopoly"
+          class="tp-action-hint"
+          :class="{ 'tp-action-hint--highlight': hintHighlighted }"
+          aria-live="polite"
+        >
+          Own every city in this country first.
+        </p>
+
+        <div v-if="tile.type === 'PROPERTY'" class="tp-build-row">
           <button
             v-if="!tile.isMortgaged && (tile.buildingLevel ?? 0) === 0"
             class="tp-btn tp-btn--mortgage"
             type="button"
+            :disabled="!canLiquidate"
+            :title="canLiquidate ? 'Mortgage this property for cash.' : 'Mortgage is available during your turn or rescue.'"
             @click="handleMortgage"
           >
-            Mortgage (${{ tile.mortgageValue }})
+            Mortgage (${{ tile.mortgageValue ?? '?' }})
           </button>
           <button
             v-if="tile.isMortgaged"
             class="tp-btn tp-btn--unmortgage"
             type="button"
+            :disabled="!isOwnTurn || selfStore.cash < unmortgageCost"
+            :title="!isOwnTurn ? 'Unmortgaging is available during your turn.' : `Requires $${unmortgageCost}.`"
             @click="handleUnmortgage"
           >
             Unmortgage (${{ unmortgageCost }})
@@ -158,7 +172,6 @@ import type { TilePublicView } from '@/types';
 import type { TileSide } from './BoardView.vue';
 import { buildHouse, buildHotel, sellBuilding, mortgageProperty, unmortgageProperty } from '@/socket/actions';
 import { useGameStore } from '@/stores/useGameStore';
-import { usePlayersStore } from '@/stores/usePlayersStore';
 import { useSelfStore } from '@/stores/useSelfStore';
 import { useTileSelection } from '@/composables/useTileSelection';
 
@@ -177,16 +190,20 @@ const props = defineProps<{
 
 // ── Stores & selection ───────────────────────────────────────────────
 const gameStore    = useGameStore();
-const playersStore = usePlayersStore();
 const selfStore    = useSelfStore();
 const { clear }    = useTileSelection();
+const hintHighlighted = ref(false);
+let hintTimer: ReturnType<typeof setTimeout> | null = null;
 
 const close = () => clear();
 
 // Close on Escape
 const onKeydown = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
 onMounted(()  => document.addEventListener('keydown', onKeydown));
-onUnmounted(() => document.removeEventListener('keydown', onKeydown));
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown);
+  if (hintTimer) clearTimeout(hintTimer);
+});
 
 // ── Floating UI positioning ──────────────────────────────────────────
 
@@ -218,7 +235,7 @@ const { floatingStyles } = useFloating(virtualRef, floatingEl, {
   placement: floatingPlacement,
   middleware: [
     offset(10),
-    shift({ padding: 12 }),
+    shift({ padding: 12, crossAxis: true }),
   ],
   strategy: 'fixed',
 });
@@ -275,46 +292,85 @@ const hasMonopoly = computed(() => {
   return group.length > 0 && group.every((t) => t.ownerId === selfStore.id);
 });
 
+const lowestGroupLevel = computed(() => {
+  if (props.tile.type !== 'PROPERTY' || !props.tile.colorGroup) return 0;
+  const levels = gameStore.board
+    .filter((tile) => tile.type === 'PROPERTY' && tile.colorGroup === props.tile.colorGroup && tile.ownerId === selfStore.id)
+    .map((tile) => tile.buildingLevel ?? 0);
+  return levels.length > 0 ? Math.min(...levels) : 0;
+});
+
 const isOwnTurn = computed(() =>
   (gameStore.currentPhase === 'WAITING_FOR_ACTION' || gameStore.currentPhase === 'END_TURN_PENDING') &&
   gameStore.currentTurnPlayerId === selfStore.id,
 );
 
-const showBuildActions = computed(() =>
-  hasMonopoly.value && isOwnTurn.value,
+const isRescueTurn = computed(() =>
+  gameStore.currentPhase === 'DYING_RESCUE' &&
+  gameStore.dyingPlayerId === selfStore.id &&
+  gameStore.currentTurnPlayerId === selfStore.id,
 );
 
-const showMortgageActions = computed(() =>
-  (props.tile.type === 'PROPERTY' || props.tile.type === 'AIRPORT') &&
-  props.tile.ownerId === selfStore.id &&
-  isOwnTurn.value &&
-  ((props.tile.buildingLevel ?? 0) === 0 || !!props.tile.isMortgaged),
+const canLiquidate = computed(() => isOwnTurn.value || isRescueTurn.value);
+
+const showManagementActions = computed(() =>
+  props.tile.type === 'PROPERTY' &&
+  props.tile.ownerId === selfStore.id,
 );
+
+const canUpgrade = computed(() => {
+  if (props.tile.type !== 'PROPERTY' || props.tile.isMortgaged) return false;
+  const level = props.tile.buildingLevel ?? 0;
+  return isOwnTurn.value && hasMonopoly.value && level < 6 && level === lowestGroupLevel.value &&
+    selfStore.cash >= (props.tile.buildCost ?? Number.POSITIVE_INFINITY);
+});
+
+const highlightGroupHint = () => {
+  hintHighlighted.value = true;
+  if (hintTimer) clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => {
+    hintHighlighted.value = false;
+    hintTimer = null;
+  }, 1800);
+};
+
+const upgradeDisabledReason = computed(() => {
+  if (!isOwnTurn.value) return 'Building is available during your turn.';
+  if (props.tile.isMortgaged) return 'Unmortgage this property before building.';
+  if (!hasMonopoly.value) return 'Own every city in this country first.';
+  if ((props.tile.buildingLevel ?? 0) !== lowestGroupLevel.value) return 'Build evenly across this colour group.';
+  if (selfStore.cash < (props.tile.buildCost ?? Number.POSITIVE_INFINITY)) return 'Not enough cash.';
+  return 'Maximum building level reached.';
+});
 
 const unmortgageCost = computed(() =>
   Math.ceil((props.tile.mortgageValue ?? 0) * 1.1),
 );
 
 const handleUpgrade = () => {
+  if (!hasMonopoly.value) {
+    highlightGroupHint();
+    return;
+  }
+  if (!canUpgrade.value) return;
   const level = props.tile.buildingLevel ?? 0;
   if (level < 4) buildHouse(props.tile.id);
   else           buildHotel(props.tile.id);
-  close();
 };
 
 const handleDowngrade = () => {
+  if (!canLiquidate.value || (props.tile.buildingLevel ?? 0) === 0) return;
   sellBuilding(props.tile.id);
-  close();
 };
 
 const handleMortgage = () => {
+  if (!canLiquidate.value) return;
   mortgageProperty(props.tile.id);
-  close();
 };
 
 const handleUnmortgage = () => {
+  if (!isOwnTurn.value || selfStore.cash < unmortgageCost.value) return;
   unmortgageProperty(props.tile.id);
-  close();
 };
 </script>
 
@@ -331,7 +387,8 @@ const handleUnmortgage = () => {
 .tp-card {
   position: fixed;
   z-index: 1001;
-  width: 260px;
+  width: min(294px, calc(100vw - 24px));
+  box-sizing: border-box;
   display: grid;
   gap: 10px;
   padding: 16px;
@@ -343,6 +400,10 @@ const handleUnmortgage = () => {
     0 2px 8px  rgba(0, 0, 0, 0.08);
   font-family: 'Itim', cursive;
   color: #26180d;
+  max-height: min(88vh, 720px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 93, 35, 0.28) transparent;
 }
 
 /* ── Header ────────────────────────────────────────────────────── */
@@ -470,6 +531,13 @@ const handleUnmortgage = () => {
   gap: 8px;
 }
 
+.tp-build-row--management {
+  align-items: center;
+  justify-content: space-between;
+  gap: 0;
+  width: 100%;
+}
+
 .tp-btn {
   flex: 1;
   min-height: 36px;
@@ -481,6 +549,47 @@ const handleUnmortgage = () => {
   transition: background 150ms, transform 100ms;
 }
 .tp-btn:active { transform: scale(0.97); }
+.tp-icon-btn {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  font-family: Arial, sans-serif;
+  font-size: 1.65rem;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid rgba(92, 66, 41, 0.16);
+  border-radius: 50%;
+  box-shadow: 0 4px 10px rgba(55, 36, 17, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  transition: background 150ms, transform 120ms, box-shadow 150ms;
+}
+.tp-icon-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(55, 36, 17, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+.tp-icon-btn:active {
+  transform: translateY(0) scale(0.94);
+}
+.tp-action-hint {
+  margin: -2px 0 0;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #8b7358;
+  text-align: center;
+  transition: color 150ms, background 150ms, border-color 150ms, box-shadow 150ms;
+}
+.tp-action-hint--highlight {
+  color: #7a1f12;
+  background: rgba(225, 83, 62, 0.16);
+  border-color: rgba(192, 57, 43, 0.42);
+  box-shadow: 0 0 0 3px rgba(192, 57, 43, 0.08);
+}
 
 .tp-btn--upgrade            { background: #b8793a; color: #fff; }
 .tp-btn--upgrade:hover      { background: #c98540; }

@@ -19,7 +19,7 @@ import type {
   S2C_PlunderExecuted,
   S2C_AuditResult,
 } from '../types/Events.types';
-import { requirePlayer, cashChange } from '../state/GameSession';
+import { requirePlayer, cashChange, syncPropCards } from '../state/GameSession';
 import { broadcastToRoom } from '../socket/emitters/broadcast';
 import { emitToPlayer } from '../socket/emitters/direct';
 import { applyRemoteDice } from './DiceEngine';
@@ -78,6 +78,7 @@ export function usePropCard(
 
   // Remove used card
   player.propCards.splice(cardIndex, 1);
+  syncPropCards(session, playerId, io);
 
   // Broadcast usage (type revealed, target may be revealed)
   const payload: S2C_PropCardUsed = {
@@ -102,6 +103,9 @@ function handleForcedTrade(
   const { targetPlayerId, targetTileId } = params;
   if (!targetPlayerId || targetTileId === undefined) {
     throw new RuleViolationError('FORCED_TRADE requires targetPlayerId and targetTileId');
+  }
+  if (targetPlayerId === buyerId) {
+    throw new RuleViolationError('Cannot force-trade your own tile');
   }
 
   const tile = session.board[targetTileId];
@@ -163,6 +167,9 @@ function handlePlunder(
 ): void {
   const { targetPlayerId } = params;
   if (!targetPlayerId) throw new RuleViolationError('PLUNDER requires targetPlayerId');
+  if (targetPlayerId === plunderer) {
+    throw new RuleViolationError('Cannot plunder yourself');
+  }
 
   const target = requirePlayer(session, targetPlayerId);
 

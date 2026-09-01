@@ -29,8 +29,4 @@ export declare function rollForJailDouble(session: GameSession, playerId: Player
     total: number;
     jailTriggered: false;
 };
-/** How many consecutive doubles the current player has rolled this turn. */
-export declare function getConsecutiveDoubles(roomId: string, playerId: PlayerId): number;
-/** Position of the jail tile. */
-export declare const JAIL_POSITION: number;
 //# sourceMappingURL=DiceEngine.d.ts.map

@@ -6,7 +6,6 @@ export type TurnPhase =
   | 'MOVING'
   | 'EVENT_TRIGGER'
   | 'AUCTION_IN_PROGRESS'
-  | 'BUILD_PHASE'
   | 'JAIL_DECISION'
   | 'DYING_RESCUE'
   | 'END_TURN_PENDING'
@@ -14,7 +13,8 @@ export type TurnPhase =
 
 export type PlayerStatus = 'ACTIVE' | 'DYING' | 'BANKRUPT' | 'DISCONNECTED';
 
-export type AuctionStatus = 'ACTIVE' | 'HAMMER_DOWN' | 'NO_SALE';
+export type AuctionStatus = 'OPEN' | 'RESOLVED' | 'NO_SALE' | 'CANCELLED';
+export type BuildingLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 export type TileType =
   | 'PROPERTY'
@@ -38,7 +38,13 @@ export enum PropCardType {
 }
 
 export type BankruptcyType = 'TYPE_A' | 'TYPE_B';
-export type TradeVoidReason = 'PLAYER_BANKRUPT' | 'GAME_ENDED' | 'TIMEOUT';
+export type TradeVoidReason =
+  | 'PLAYER_ROLLED'
+  | 'PLAYER_JAILED'
+  | 'PLAYER_DYING'
+  | 'PLAYER_BANKRUPT'
+  | 'PLAYER_DISCONNECTED'
+  | 'GAME_ENDED';
 
 export type TileId = number;
 export type PlayerId = string;
@@ -59,13 +65,13 @@ export interface TilePublicView {
   basePrice?: number;
   mortgageValue?: number;
   ownerId?: PlayerId | null;
-  buildingLevel?: number;
+  buildingLevel?: BuildingLevel;
   buildCost?: number;
   isMortgaged?: boolean;
   isLit?: boolean;
   baseRent?: number;
   baseRentWithMonopoly?: number;
-  rentByLevel?: number[];
+  rentByLevel?: [number, number, number, number, number, number, number];
   rentTable?: number[];
   prayFee?: number;
   passThruToll?: number;
@@ -109,7 +115,7 @@ export interface AuctionPublicView {
   passedPlayerIds: PlayerId[];
   winnerId: PlayerId | null;
   finalPrice: number | null;
-  roundDeadlineAt: number | null;
+  roundDeadlineAt: number;
 }
 
 export interface TradeOffer {
@@ -134,8 +140,22 @@ export interface TradeDetail {
   responderOffer: TradeOffer;
 }
 
+export interface DyingRescuePublicView {
+  playerId: PlayerId;
+  rescueDeadlineAt: number;
+}
+
+export interface DyingRescueDetail {
+  amountOwed: number;
+  creditorId: PlayerId | null;
+  bankruptcyType: BankruptcyType;
+  rescueDeadlineAt: number;
+  availableActions: string[];
+}
+
 export interface DesensitizedGameState {
   roomId: string;
+  hostId: PlayerId;
   status: GameStatus;
   currentPhase: TurnPhase;
   currentTurnPlayerId: PlayerId | null;
@@ -145,17 +165,12 @@ export interface DesensitizedGameState {
   players: PlayerPublicView[];
   activeAuction: AuctionPublicView | null;
   pendingTrades: TradePublicView[];
+  dyingRescue: DyingRescuePublicView | null;
+  pause: {
+    disconnectedPlayerId: PlayerId;
+    reconnectDeadlineAt: number;
+  } | null;
   winners: PlayerId[];
-}
-
-export interface ReconnectStateSnapshot {
-  selfView: PlayerSelfView;
-  publicPlayers: PlayerPublicView[];
-  board: TilePublicView[];
-  playerOrder: PlayerId[];
-  currentPhase: TurnPhase;
-  currentTurnPlayerId: PlayerId | null;
-  turnNumber: number;
 }
 
 export interface ProposeTrade {

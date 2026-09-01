@@ -4,7 +4,7 @@
       <div class="paused-card">
         <p class="eyebrow">Game Paused</p>
         <h2>Match flow is temporarily frozen.</h2>
-        <p v-if="pausedPlayerName">{{ pausedPlayerName }} paused the game. Countdown: {{ gameStore.pauseCountdownSeconds }}s.</p>
+        <p v-if="pausedPlayerName">{{ pausedPlayerName }} paused the game. Countdown: {{ pauseRemainingSeconds }}s.</p>
       </div>
     </div>
 
@@ -13,7 +13,8 @@
       class="rescue-banner"
       :class="{ 'rescue-banner--self': gameStore.dyingPlayerId === selfStore.id }"
     >
-      <span>{{ gameStore.dyingPlayerId === selfStore.id ? 'You are in the rescue window.' : `${dyingPlayerName} is in the rescue window.` }}</span>
+      <span>{{ rescueBannerText }}</span>
+      <strong>{{ rescueCountdownLabel }}</strong>
     </div>
 
     <section class="game-scene" :class="{ 'drawer-open': drawerOpen }">
@@ -43,19 +44,20 @@
               :active-tile-name="isCasinoBetting ? null : (activeTile?.name ?? null)"
               :active-tile-type="isCasinoBetting ? null : activeTileTypeLabel"
               :active-tile-price="isCasinoBetting ? null : (activeTile?.basePrice ?? null)"
+              :rolling="gameStore.diceUi.isRolling"
+              :resolving="gameStore.diceUi.isResolving"
+              :dice-result="gameStore.diceUi.result"
+              :dice-roll-key="gameStore.diceUi.nonce"
+              @settled="gameStore.finishDiceRollAnimation()"
             >
-              <template #pills>
-                <EventLogStream />
-              </template>
-
               <template #actions>
                 <div class="hub-stack">
                   <div v-if="isMyTurn && gameStore.currentPhase === 'WAITING_FOR_ACTION'" class="button-row">
-                    <button class="pill pill--primary" type="button" @click="rollDice">🎲 Roll Dice</button>
+                    <button class="pill pill--primary" type="button" :disabled="!isConnected || gameStore.diceUi.isRolling || gameStore.director.activeSequence === 'dice-roll'" @click="handleRollDice">🎲 Roll Dice</button>
                   </div>
 
 
-                  <div v-if="isMyTurn && contextualActions.length > 0" class="button-row">
+                  <div v-if="isMyTurn && !gameStore.activeAuction && contextualActions.length > 0" class="button-row">
                     <button
                       v-for="action in contextualActions"
                       :key="action.id"
@@ -108,10 +110,6 @@
                     <button class="pill pill--primary" type="button" @click="endTurn">End Turn</button>
                   </div>
 
-                  <div v-if="isMyTurn && gameStore.currentPhase === 'BUILD_PHASE'" class="button-row">
-                    <button class="pill pill--primary" type="button" @click="endTurn">Finish Build Phase</button>
-                  </div>
-
                   <p v-if="!isMyTurn && gameStore.status === 'IN_PROGRESS'" class="muted-note">
                     Waiting for {{ currentPlayerLabel }} to finish the {{ turnPhaseLabel.toLowerCase() }} phase.
                   </p>
@@ -119,45 +117,6 @@
               </template>
 
               <template #details>
-                <section v-if="isMyTurn && gameStore.currentPhase === 'BUILD_PHASE'" class="detail-card">
-                  <p class="eyebrow eyebrow--small">Build Queue</p>
-                  <div v-if="selfStore.constructibleTileIds.length > 0" class="detail-list">
-                    <div v-for="tileId in selfStore.constructibleTileIds" :key="tileId" class="detail-row">
-                      <div>
-                        <strong>{{ gameStore.boardById[tileId]?.name ?? `Tile ${tileId}` }}</strong>
-                        <small>Level {{ gameStore.boardById[tileId]?.buildingLevel ?? 0 }}</small>
-                      </div>
-                      <div class="button-row">
-                        <button
-                          v-if="(gameStore.boardById[tileId]?.buildingLevel ?? 0) < 4"
-                          class="pill pill--dark"
-                          type="button"
-                          @click="buildHouse(tileId)"
-                        >
-                          Build House
-                        </button>
-                        <button
-                          v-else
-                          class="pill pill--dark"
-                          type="button"
-                          @click="buildHotel(tileId)"
-                        >
-                          Build Hotel
-                        </button>
-                        <button
-                          v-if="(gameStore.boardById[tileId]?.buildingLevel ?? 0) > 0"
-                          class="pill pill--soft"
-                          type="button"
-                          @click="sellBuilding(tileId)"
-                        >
-                          Sell
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <p v-else class="muted-note">No properties are currently eligible for construction.</p>
-                </section>
-
                 <section v-if="isCasinoBetting" class="detail-card detail-card--casino">
                   <div class="casino-top-row">
                     <button class="pill pill--soft casino-skip-btn" type="button" @click="handleCasinoSkip">Skip</button>
@@ -233,7 +192,16 @@
             </div>
           </div>
           <div class="drawer-actions">
-            <button class="pill pill--dark" type="button" @click="handleStartGame">Start Game</button>
+            <button
+              v-if="isLobbyHost"
+              class="pill pill--dark"
+              type="button"
+              :disabled="!canStartLobby"
+              :title="lobbyStartHint"
+              @click="handleStartGame"
+            >Start Game</button>
+            <p v-else class="muted-note">Waiting for the room host to start the match.</p>
+            <p v-if="isLobbyHost && !canStartLobby" class="muted-note">{{ lobbyStartHint }}</p>
             <RouterLink class="drawer-link" to="/">Back To Lobby</RouterLink>
             <button class="pill pill--soft" type="button" @click="handleDisconnect">Disconnect</button>
             <button class="pill pill--soft" type="button" @click="handleClearSession">Clear Session</button>
@@ -259,6 +227,7 @@
               :constructible-count="player.id === selfStore.id ? selfStore.constructibleTileIds.length : null"
               :is-current="gameStore.currentTurnPlayerId === player.id"
               :is-self="player.id === selfStore.id"
+              :is-host="gameStore.hostId === player.id"
             />
           </div>
         </section>
@@ -268,6 +237,15 @@
 
       </aside>
     </section>
+
+    <div class="money-feedback-layer" aria-live="polite" aria-atomic="true">
+      <FloatingText
+        v-for="entry in floatingTextStore.globalTexts"
+        :key="entry.id"
+        :text="entry.text"
+        :is-global="true"
+      />
+    </div>
   </section>
 </template>
 
@@ -277,14 +255,12 @@ import { useRouter } from 'vue-router';
 
 import BoardView from '@/components/board/BoardView.vue';
 import CenterHub from '@/components/board/CenterHub.vue';
-import EventLogStream from '@/components/board/EventLogStream.vue';
+import FloatingText from '@/components/board/FloatingText.vue';
 import PlayerPanel from '@/components/panels/PlayerPanel.vue';
 import PropCardHand from '@/components/panels/PropCardHand.vue';
 import TradePanel from '@/components/panels/TradePanel.vue';
 import { clearRoomSession, disconnectRoomSession } from '@/services/roomSession';
 import {
-  buildHouse,
-  buildHotel,
   buyProperty,
   chooseAuction,
   declareBankruptcy,
@@ -296,7 +272,6 @@ import {
   placeAuctionBid,
   rollDice,
   rollForDouble,
-  sellBuilding,
   skipPurchase,
   startGame,
   templePray,
@@ -325,12 +300,8 @@ const auctionBidAmount = ref(0);
 const actionTaken = ref(false);
 const casinoBetPlaced = ref(false);
 const floatingTextStore = useFloatingTextStore();
-
-const triggerFloatingTax = (): void => {
-  const pos = selfStore.position;
-  const amt = gameStore.pendingTaxAmount;
-  if (pos !== null && amt) floatingTextStore.show(pos, `-$${amt}`);
-};
+const clockNowMs = ref(Date.now());
+let clockTimer: number | null = null;
 
 const refreshSession = (): void => {
   session.value = readStoredSocketSession();
@@ -364,6 +335,22 @@ const rosterPlayers = computed(() => {
   });
 });
 
+const isLobbyHost = computed(() => gameStore.hostId === selfStore.id);
+const canStartLobby = computed(() => (
+  isConnected.value &&
+  isLobbyHost.value &&
+  rosterPlayers.value.length >= 2 &&
+  rosterPlayers.value.every(player => player.isConnected)
+));
+const lobbyStartHint = computed(() => {
+  if (!isConnected.value) return 'Reconnect before starting the match.';
+  if (rosterPlayers.value.length < 2) return 'At least two players are required.';
+  if (rosterPlayers.value.some(player => !player.isConnected)) {
+    return 'Wait for every reserved player to reconnect or for their seat to expire.';
+  }
+  return 'Start the match.';
+});
+
 const roomNumberDisplay = computed(() => getShortRoomCode(session.value.roomId));
 
 const boardPlayers = computed(() =>
@@ -381,7 +368,6 @@ const phaseLabelMap: Record<string, string> = {
   MOVING: 'Moving',
   EVENT_TRIGGER: 'Resolving event',
   AUCTION_IN_PROGRESS: 'Auction',
-  BUILD_PHASE: 'Build phase',
   JAIL_DECISION: 'Jail decision',
   DYING_RESCUE: 'Rescue window',
   END_TURN_PENDING: 'Ready to end turn',
@@ -443,19 +429,48 @@ const pausedPlayerName = computed(() => (
     : null
 ));
 
+const pauseRemainingSeconds = computed(() => {
+  if (!gameStore.pauseDeadlineAt) return 0;
+  return Math.max(0, Math.ceil((gameStore.pauseDeadlineAt - clockNowMs.value) / 1000));
+});
+
 const dyingPlayerName = computed(() => (
   gameStore.dyingPlayerId
     ? playersStore.players[gameStore.dyingPlayerId]?.nickname ?? gameStore.dyingPlayerId
     : null
 ));
 
+const rescueRemainingSeconds = computed(() => {
+  if (!gameStore.rescueWindowEndsAt) return 0;
+  return Math.max(0, Math.ceil((gameStore.rescueWindowEndsAt - clockNowMs.value) / 1000));
+});
+const rescueCountdownLabel = computed(() => {
+  const minutes = Math.floor(rescueRemainingSeconds.value / 60);
+  const seconds = rescueRemainingSeconds.value % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+});
+const rescueBannerText = computed(() => {
+  if (gameStore.dyingPlayerId !== selfStore.id) {
+    return `${dyingPlayerName.value} is raising rescue funds.`;
+  }
+
+  const amountOwed = gameStore.rescueAmountOwed;
+  if (amountOwed === null) return 'You are raising rescue funds.';
+
+  const creditor = gameStore.rescueCreditorId
+    ? playersStore.players[gameStore.rescueCreditorId]?.nickname ?? gameStore.rescueCreditorId
+    : 'the bank';
+  const shortfall = Math.max(0, amountOwed - selfStore.cash);
+  return `Debt $${amountOwed} to ${creditor}. Raise $${shortfall} more by selling, mortgaging, or trading.`;
+});
+
 const centerDescription = computed(() => {
+  if (gameStore.director.activeSequence === 'dice-roll') return 'The dice are rolling. Please wait for the result.';
   if (gameStore.status === 'LOBBY') return 'Start the match from the drawer when everyone has joined.';
   if (gameStore.status === 'PAUSED') return pausedPlayerName.value ? `${pausedPlayerName.value} paused the game.` : 'The board is paused.';
   if (gameStore.status === 'FINISHED') return winnerNames.value.length > 0 ? `Winner: ${winnerNames.value.join(', ')}.` : 'Final standings locked.';
   if (!gameStore.currentTurnPlayerId) return 'The board is waiting for the first active turn assignment.';
   if (isMyTurn.value && gameStore.currentPhase === 'WAITING_FOR_ACTION') return 'Your turn is live. Roll the dice from the command area below.';
-  if (isMyTurn.value && gameStore.currentPhase === 'BUILD_PHASE') return 'Upgrade any eligible property before ending the phase.';
   if (isMyTurn.value && gameStore.currentPhase === 'END_TURN_PENDING') return 'Your move is resolved. End the turn when you are ready.';
   if (isMyTurn.value && gameStore.currentPhase === 'EVENT_TRIGGER' && activeTile.value?.type === 'TAX' && gameStore.pendingTaxAmount)
     return `Tax Event! You must pay $${gameStore.pendingTaxAmount} to continue.`;
@@ -491,16 +506,24 @@ const ACTION_CONFIG: Record<string, { label: string; tone: 'primary' | 'dark' | 
   CHOOSE_AUCTION: { label: 'Auction It', tone: 'primary', handler: () => { actionTaken.value = true; chooseAuction(); } },
   SKIP_PURCHASE: { label: 'Skip Purchase', tone: 'primary', handler: () => { actionTaken.value = true; skipPurchase(); } },
   PAY_BAIL: { label: 'Pay Bail', tone: 'primary', handler: () => payBail() },
-  PAY_TAX: { label: 'Pay Tax', tone: 'danger', handler: () => { triggerFloatingTax(); actionTaken.value = true; payTax(); } },
+  PAY_TAX: { label: 'Pay Tax', tone: 'danger', handler: () => { actionTaken.value = true; payTax(); } },
   ROLL_FOR_DOUBLE: { label: 'Roll For Double', tone: 'primary', handler: () => rollForDouble() },
-  PRAY: { label: 'Pray', tone: 'dark', handler: () => templePray() },
+  TEMPLE_PRAY: { label: 'Pray', tone: 'dark', handler: () => { actionTaken.value = true; templePray(); } },
   DECLARE_BANKRUPTCY: { label: 'Declare Bankruptcy', tone: 'danger', handler: () => declareBankruptcy() },
 };
 
 const contextualActions = computed(() => {
   if (actionTaken.value) return [];
+  const isCasinoPhase = gameStore.currentPhase === 'EVENT_TRIGGER'
+    && gameStore.availableActions.includes('CASINO_BET');
+
   return gameStore.availableActions
-    .filter((action) => action !== 'PLACE_BET' && action !== 'END_TURN' && ACTION_CONFIG[action])
+    .filter((action) => (
+      action !== 'PLACE_BET'
+      && action !== 'END_TURN'
+      && !(isCasinoPhase && action === 'SKIP_PURCHASE')
+      && ACTION_CONFIG[action]
+    ))
     .map((action) => ({ id: action, ...ACTION_CONFIG[action]! }));
 });
 
@@ -522,18 +545,12 @@ const isCasinoBetting = computed(() =>
   isMyTurn.value && gameStore.currentPhase === 'EVENT_TRIGGER' && gameStore.availableActions.includes('CASINO_BET'),
 );
 
-const casinoPresets = computed((): number[] => {
-  if (!activeTile.value || activeTile.value.type !== 'CASINO') return [];
-  const step = activeTile.value.betMultiple ?? 50;
-  const max = activeTile.value.maxBet ?? Infinity;
-  return [step, step * 2, step * 4, step * 10, step * 20, step * 100].filter((p) => p <= max);
-});
-
-const isBetValid = computed(() => {
-  if (!activeTile.value || activeTile.value.type !== 'CASINO') return false;
-  const step = activeTile.value.betMultiple ?? 50;
-  return casinoBetAmount.value > 0 && casinoBetAmount.value % step === 0;
-});
+const handleRollDice = (): void => {
+  if (!ensureActiveRoomSession()) return;
+  if (gameStore.diceUi.isRolling || gameStore.director.activeSequence === 'dice-roll') return;
+  gameStore.beginDiceRoll();
+  rollDice();
+};
 
 const handlePlaceBet = (): void => {
   if (casinoBetPlaced.value) return;
@@ -578,7 +595,7 @@ const ensureActiveRoomSession = (): boolean => {
 };
 
 const handleStartGame = (): void => {
-  if (ensureActiveRoomSession()) startGame();
+  if (canStartLobby.value && ensureActiveRoomSession()) startGame();
 };
 
 const handleDisconnect = (): void => {
@@ -600,6 +617,7 @@ watch(
 const onActionRejected = (): void => { actionTaken.value = false; };
 
 onMounted(() => {
+  clockTimer = window.setInterval(() => { clockNowMs.value = Date.now(); }, 1_000);
   refreshSession();
   gameSocket.on('connect', syncConnectionState);
   gameSocket.on('disconnect', syncConnectionState);
@@ -608,6 +626,10 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (clockTimer !== null) {
+    window.clearInterval(clockTimer);
+    clockTimer = null;
+  }
   gameSocket.off('connect', syncConnectionState);
   gameSocket.off('disconnect', syncConnectionState);
   gameSocket.off('connect_error', syncConnectionState);
@@ -617,6 +639,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .game-page { width: 100%; height: 100vh; overflow: hidden; }
+.money-feedback-layer { position: fixed; inset: 0; z-index: 1199; pointer-events: none; }
 .game-scene { position: relative; width: 100%; height: 100vh; overflow: hidden; --drawer-width: 360px; --board-size: min(92vh, calc(100vw - 32px)); }
 .board-wrapper { position: absolute; top: 50%; left: 50%; width: var(--board-size); height: var(--board-size); transform: translate(-50%, -50%); transition: transform 320ms cubic-bezier(0.4, 0, 0.2, 1); }
 .game-scene.drawer-open .board-wrapper { transform: translate(calc(-50% - calc(var(--drawer-width) / 2)), -50%); }
@@ -643,7 +666,7 @@ onBeforeUnmount(() => {
 .button-row, .input-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .pill, .drawer-link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 10px 24px; border-radius: 999px; border: 0; font-family: 'Itim', cursive; font-size: 1rem; font-weight: 400; text-decoration: none; cursor: pointer; }
 .pill--primary { background: #b8793a; color: #fff; box-shadow: 0 4px 14px rgba(143, 80, 20, 0.35); font-size: 1.05rem; }
-.hub-stack .button-row { flex-wrap: nowrap; gap: 8px; }
+.hub-stack .button-row { flex-wrap: nowrap; gap: 8px; background: transparent !important; border: 0; box-shadow: none; }
 .hub-stack .button-row .pill { flex: 1; min-width: 0; min-height: 40px; padding: 8px 12px; font-size: 0.875rem; }
 .hub-stack .button-row .pill--primary { font-size: 0.875rem; }
 .pill--primary:hover { background: #c98540; box-shadow: 0 6px 18px rgba(143, 80, 20, 0.45); }
@@ -662,7 +685,7 @@ onBeforeUnmount(() => {
 .auction-grid span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #8f5d23; }
 .paused-overlay { position: fixed; inset: 0; z-index: 100; background: rgba(10, 6, 2, 0.6); display: grid; place-items: center; backdrop-filter: blur(4px); }
 .paused-card { padding: 36px 48px; border-radius: 28px; background: linear-gradient(180deg, rgba(255, 252, 242, 0.98), rgba(244, 234, 210, 0.98)); border: 1px solid rgba(120, 90, 40, 0.2); box-shadow: 0 30px 60px rgba(30, 18, 6, 0.25); text-align: center; max-width: 420px; }
-.rescue-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 40; padding: 12px 20px; background: linear-gradient(90deg, rgba(255, 220, 100, 0.96), rgba(255, 200, 60, 0.96)); color: #5a3a00; }
+.rescue-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 40; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 20px; background: linear-gradient(90deg, rgba(255, 220, 100, 0.96), rgba(255, 200, 60, 0.96)); color: #5a3a00; }
 .rescue-banner--self { background: linear-gradient(90deg, rgba(255, 100, 100, 0.95), rgba(220, 60, 60, 0.95)); color: #fff; }
 .event-info {
   padding: 12px 16px;
@@ -688,5 +711,5 @@ onBeforeUnmount(() => {
 .casino-chip--active { background: #b8793a; border-color: #b8793a; color: #fff; }
 @media (max-width: 1080px) { .game-scene { --drawer-width: 320px; } .auction-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .game-scene { --board-size: min(calc(100vw - 24px), calc(100vh - 24px)); } .game-scene.drawer-open .board-wrapper { transform: translate(-50%, -50%); } .side-drawer { width: min(100vw, 420px); } .game-scene.drawer-open .drawer-toggle { right: min(100vw, 420px); } }
-@media (max-width: 720px) { .game-scene { --board-size: calc(100vw - 16px); } .drawer-toggle { top: auto; bottom: 80px; right: 0; transform: none; border-radius: 12px 0 0 12px; } .game-scene.drawer-open .drawer-toggle { right: 100vw; } .side-drawer { width: 100vw; padding: 18px 16px 24px; } .stats-grid { grid-template-columns: 1fr; } .button-row, .input-row { flex-direction: column; align-items: stretch; } }
+@media (max-width: 720px) { .game-scene { --board-size: calc(100vw - 16px); } .drawer-toggle { top: auto; bottom: 80px; right: 0; transform: none; border-radius: 12px 0 0 12px; } .game-scene.drawer-open .drawer-toggle { right: 0; } .side-drawer { width: 100vw; padding: 18px 44px 24px 16px; } .stats-grid { grid-template-columns: 1fr; } .button-row, .input-row { flex-direction: column; align-items: stretch; } }
 </style>

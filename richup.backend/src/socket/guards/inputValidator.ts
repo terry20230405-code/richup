@@ -1,6 +1,7 @@
 import type { Socket } from 'socket.io';
 import type { ZodSchema, ZodError } from 'zod';
 import type { S2C_ActionRejected } from '../../types/Events.types';
+import { emitToSocket } from '../emitters/direct';
 
 /**
  * Validate incoming payload against a Zod schema.
@@ -20,7 +21,7 @@ export function validateInput<T>(
       reason: err.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; '),
       code: 'INVALID_INPUT',
     };
-    socket.emit('ACTION_REJECTED', payload);
+    emitToSocket(socket, 'ACTION_REJECTED', payload);
     return null;
   }
   return result.data;

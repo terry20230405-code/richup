@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.emitToPlayer = emitToPlayer;
+exports.emitToSocket = emitToSocket;
 exports.playerRoom = playerRoom;
 /**
  * Emit a private event to a specific player.
@@ -11,6 +12,10 @@ exports.playerRoom = playerRoom;
  */
 function emitToPlayer(io, playerId, event, payload) {
     io.to(`player:${playerId}`).emit(event, payload);
+}
+/** Emit a protocol-checked event only to the current physical socket. */
+function emitToSocket(socket, event, payload) {
+    socket.emit(event, payload);
 }
 /** The private room name a player socket should join. */
 function playerRoom(playerId) {

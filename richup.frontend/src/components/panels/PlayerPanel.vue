@@ -33,6 +33,7 @@
               </span>
             </span>
             <span v-if="isSelf" class="tag">You</span>
+            <span v-if="isHost" class="tag">Host</span>
             <span v-if="isCurrent" class="status-chip status-chip-turn">
               Turn
             </span>
@@ -82,12 +83,14 @@ withDefaults(
     constructibleCount?: number | null;
     isCurrent?: boolean;
     isSelf?: boolean;
+    isHost?: boolean;
   }>(),
   {
     cash: null,
     constructibleCount: null,
     isCurrent: false,
     isSelf: false,
+    isHost: false,
   },
 );
 </script>

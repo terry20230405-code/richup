@@ -14,7 +14,7 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const socket_io_1 = require("socket.io");
 const health_routes_1 = __importDefault(require("./routes/health.routes"));
-const lobby_routes_1 = __importDefault(require("./routes/lobby.routes"));
+const lobby_routes_1 = require("./routes/lobby.routes");
 const SocketEventRouter_1 = require("./socket/SocketEventRouter");
 const RoomManager_1 = require("./state/RoomManager");
 const direct_1 = require("./socket/emitters/direct");
@@ -24,13 +24,13 @@ const app = (0, express_1.default)();
 app.use((0, cors_1.default)());
 app.use(express_1.default.json());
 app.use('/api/v1', health_routes_1.default);
-app.use('/api/v1', lobby_routes_1.default);
 // ─── HTTP + Socket.io server ──────────────────────────────────────────────────
 const httpServer = http_1.default.createServer(app);
 const io = new socket_io_1.Server(httpServer, {
     cors: { origin: '*' },
 });
 exports.io = io;
+app.use('/api/v1', (0, lobby_routes_1.createLobbyRouter)(io));
 // ─── Socket.io connection handler ────────────────────────────────────────────
 io.on('connection', (socket) => {
     const auth = socket.handshake.auth;
@@ -61,6 +61,6 @@ io.on('connection', (socket) => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = Number(process.env.PORT ?? 3000);
 httpServer.listen(PORT, () => {
-    logger_1.logger.info({ port: PORT }, '《现代大亨》server listening');
+    logger_1.logger.info({ port: PORT }, 'Modern Tycoon server listening');
 });
 //# sourceMappingURL=index.js.map

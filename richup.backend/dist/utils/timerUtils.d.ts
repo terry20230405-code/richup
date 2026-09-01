@@ -35,6 +35,7 @@ export declare const TimerNS: {
     auctionRound: (roomId: string) => string;
     dyingRescue: (roomId: string, playerId: string) => string;
     dyingAfk: (roomId: string, playerId: string) => string;
+    lobbyReconnect: (roomId: string, playerId: string) => string;
     reconnect: (roomId: string, playerId: string) => string;
 };
 //# sourceMappingURL=timerUtils.d.ts.map

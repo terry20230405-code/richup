@@ -6,17 +6,21 @@
  * The roll result is stored in session.lastDiceRoll.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.JAIL_POSITION = void 0;
 exports.resetDoublesTracker = resetDoublesTracker;
 exports.performRoll = performRoll;
 exports.applyRemoteDice = applyRemoteDice;
 exports.rollForJailDouble = rollForJailDouble;
-exports.getConsecutiveDoubles = getConsecutiveDoubles;
-const GameConfig_1 = require("../config/GameConfig");
 const randomUtils_1 = require("../utils/randomUtils");
 const broadcast_1 = require("../socket/emitters/broadcast");
 const logger_1 = require("../utils/logger");
+const TradeLifecycle_1 = require("./TradeLifecycle");
+const Trade_types_1 = require("../types/Trade.types");
 const MAX_CONSECUTIVE_DOUBLES = 3;
+const REMOTE_DICE_PAIRS = {
+    5: [2, 3],
+    6: [1, 5],
+    7: [3, 4],
+};
 /** Track consecutive doubles per player per turn. Cleared on END_TURN. */
 const doublesTracker = new Map(); // key: `${roomId}:${playerId}`
 function doublesKey(roomId, playerId) {
@@ -27,7 +31,13 @@ function resetDoublesTracker(roomId, playerId) {
 }
 /** Roll dice for the current player. Emits DICE_ROLLED. Returns the result. */
 function performRoll(session, playerId, io) {
-    const result = (0, randomUtils_1.rollDice)();
+    const override = session.remoteDiceOverride?.playerId === playerId
+        ? session.remoteDiceOverride
+        : null;
+    session.remoteDiceOverride = null;
+    const result = override
+        ? { die1: REMOTE_DICE_PAIRS[override.steps][0], die2: REMOTE_DICE_PAIRS[override.steps][1], isDouble: false, total: override.steps }
+        : (0, randomUtils_1.rollDice)();
     session.lastDiceRoll = result;
     const payload = {
         playerId,
@@ -37,6 +47,7 @@ function performRoll(session, playerId, io) {
         totalSteps: result.total,
     };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'DICE_ROLLED', payload);
+    (0, TradeLifecycle_1.voidTradesInvolvingPlayer)(session, playerId, Trade_types_1.TradeVoidReason.PLAYER_ROLLED, io);
     logger_1.logger.debug({ roomId: session.id, playerId, ...result }, 'Dice rolled');
     // Track doubles
     const key = doublesKey(session.id, playerId);
@@ -58,7 +69,7 @@ function performRoll(session, playerId, io) {
  * Emits DICE_OVERRIDE broadcast.
  */
 function applyRemoteDice(session, playerId, steps, io) {
-    session.lastDiceRoll = { die1: steps, die2: 0, isDouble: false, total: steps };
+    session.remoteDiceOverride = { playerId, steps };
     const payload = { playerId, steps, source: 'REMOTE_DICE' };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'DICE_OVERRIDE', payload);
 }
@@ -74,12 +85,7 @@ function rollForJailDouble(session, playerId, io) {
         totalSteps: result.total,
     };
     (0, broadcast_1.broadcastToRoom)(io, session.id, 'DICE_ROLLED', payload);
+    (0, TradeLifecycle_1.voidTradesInvolvingPlayer)(session, playerId, Trade_types_1.TradeVoidReason.PLAYER_ROLLED, io);
     return { ...result, total: result.total, jailTriggered: false };
 }
-/** How many consecutive doubles the current player has rolled this turn. */
-function getConsecutiveDoubles(roomId, playerId) {
-    return doublesTracker.get(doublesKey(roomId, playerId)) ?? 0;
-}
-/** Position of the jail tile. */
-exports.JAIL_POSITION = GameConfig_1.BOARD_CONFIG.FIXED_ANCHORS.JAIL;
 //# sourceMappingURL=DiceEngine.js.map

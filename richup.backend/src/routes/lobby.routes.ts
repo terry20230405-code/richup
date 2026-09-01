@@ -8,15 +8,19 @@
  */
 
 import { Router } from 'express';
+import type { Server } from 'socket.io';
 import {
   createRoom,
   joinRoom,
   deleteRoom,
+  getSession,
   listRooms,
   verifyToken,
 } from '../state/RoomManager';
+import { broadcastLobbyState, scheduleLobbyReservation } from '../modules/ConnectionLifecycle';
 import { logger } from '../utils/logger';
 
+export function createLobbyRouter(io: Server): Router {
 const router = Router();
 
 // GET /rooms
@@ -33,6 +37,11 @@ router.post('/rooms', (req, res) => {
   }
   try {
     const result = createRoom(hostNickname.trim());
+    const session = getSession(result.roomId);
+    if (session) {
+      scheduleLobbyReservation(session, result.playerId, io);
+      broadcastLobbyState(session, io);
+    }
     res.status(201).json(result);
   } catch (err) {
     logger.error(err, 'createRoom failed');
@@ -49,6 +58,11 @@ router.post('/rooms/:id/join', (req, res) => {
   }
   try {
     const result = joinRoom(req.params['id']!, nickname.trim());
+    const session = getSession(req.params['id']!);
+    if (session) {
+      scheduleLobbyReservation(session, result.playerId, io);
+      broadcastLobbyState(session, io);
+    }
     res.status(200).json({ roomId: req.params['id'], ...result });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -89,4 +103,5 @@ router.delete('/rooms/:id', (req, res) => {
   }
 });
 
-export default router;
+return router;
+}

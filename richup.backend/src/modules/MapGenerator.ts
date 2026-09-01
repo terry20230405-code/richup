@@ -34,7 +34,9 @@ export function generateBoard(): Tile[] {
   const board: (Tile | null)[] = new Array<null>(TOTAL_TILES).fill(null);
 
   for (const [id, tile] of FIXED_ANCHOR_TILES) {
-    board[id] = tile;
+    // Fixed definitions are immutable blueprints. Each room needs its own
+    // tile state so ownership, mortgages, and temple progress cannot leak.
+    board[id] = cloneFixedTile(tile);
   }
 
   const poolChunks: RandomPoolChunk[] = [
@@ -68,6 +70,14 @@ export function generateBoard(): Tile[] {
 
   validateGeneratedBoard(board);
   return board;
+}
+
+function cloneFixedTile(tile: Tile): Tile {
+  if (tile.type === TileType.AIRPORT) {
+    return { ...tile, rentTable: [...tile.rentTable] as typeof tile.rentTable };
+  }
+
+  return { ...tile } as Tile;
 }
 
 function validateGeneratedBoard(board: (Tile | null)[]): asserts board is Tile[] {

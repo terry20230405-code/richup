@@ -1,7 +1,7 @@
 {
   "name": "modern-tycoon-server",
   "version": "1.0.0",
-  "description": "《现代大亨》棋盘游戏后端服务器",
+  "description": "Modern Tycoon board game backend server",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

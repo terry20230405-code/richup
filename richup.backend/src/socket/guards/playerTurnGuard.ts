@@ -3,6 +3,7 @@ import type { PlayerId } from '../../types/Common.types';
 import type { GameSession } from '../../types/GameSession.types';
 import type { S2C_ActionRejected } from '../../types/Events.types';
 import { getCurrentPlayerId } from '../../state/GameSession';
+import { emitToSocket } from '../emitters/direct';
 
 /**
  * Verify the socket sender is the current turn player.
@@ -21,7 +22,7 @@ export function playerTurnGuard(
       reason: `It is not your turn`,
       code: 'NOT_YOUR_TURN',
     };
-    socket.emit('ACTION_REJECTED', payload);
+    emitToSocket(socket, 'ACTION_REJECTED', payload);
     return false;
   }
   return true;

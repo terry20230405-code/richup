@@ -12,7 +12,9 @@ exports.toSelfView = toSelfView;
 exports.serializePublicPlayers = serializePublicPlayers;
 exports.serializeBoard = serializeBoard;
 exports.buildReconnectSnapshot = buildReconnectSnapshot;
+const GameSession_types_1 = require("../types/GameSession.types");
 const GameSession_1 = require("../state/GameSession");
+const BankruptcyResolver_1 = require("../modules/BankruptcyResolver");
 // ─── Player views ─────────────────────────────────────────────────────────────
 /** ⚠ Safe to broadcast: contains NO cash, propCards, immunity, or priceHike. */
 function toPublicView(player) {
@@ -51,7 +53,7 @@ function toSelfView(player, session) {
         propCards: player.propCards,
         hasImmunity: player.hasImmunity,
         priceHikeActive: player.priceHikeActive,
-        constructibleTileIds: (0, GameSession_1.getOwnedTileIds)(session, player.id),
+        constructibleTileIds: (0, GameSession_1.getConstructibleTileIds)(session, player.id),
     };
 }
 /** Returns public views for all players — safe to broadcast. */
@@ -65,11 +67,27 @@ function serializePublicPlayers(session) {
  * (Tile.ownerId identifies the owner but reveals no financial info.)
  */
 function serializeBoard(session) {
-    return session.board.map(serializeTile);
+    return session.board.map(tile => serializeTile(session, tile));
 }
-function serializeTile(tile) {
-    // Tiles are already serializable; just return as plain object.
-    return tile;
+function serializeTile(session, tile) {
+    switch (tile.type) {
+        case 'TEMPLE':
+            return {
+                id: tile.id,
+                name: tile.name,
+                type: tile.type,
+                ownerId: tile.ownerId,
+                isMortgaged: tile.isMortgaged,
+                basePrice: tile.basePrice,
+                mortgageValue: tile.mortgageValue,
+                isLit: tile.isLit,
+                litThreshold: session.config.templeLitThreshold,
+                prayFee: session.config.templePrayFee,
+                passThruToll: session.config.templePassThruToll,
+            };
+        default:
+            return { ...tile };
+    }
 }
 function serializeActiveAuction(session) {
     const auction = session.activeAuction;
@@ -100,6 +118,23 @@ function serializePendingTrades(session) {
         proposedAt: trade.proposedAt,
     }));
 }
+function serializePrivateTradeDetails(session, playerId) {
+    return [...session.activeTrades.values()]
+        .filter(trade => trade.proposerId === playerId || trade.responderId === playerId)
+        .map(trade => ({
+        tradeId: trade.id,
+        proposerOffer: {
+            ...trade.proposerOffer,
+            tileIds: [...trade.proposerOffer.tileIds],
+            propCardIds: [...(trade.proposerOffer.propCardIds ?? [])],
+        },
+        responderOffer: {
+            ...trade.responderOffer,
+            tileIds: [...trade.responderOffer.tileIds],
+            propCardIds: [...(trade.responderOffer.propCardIds ?? [])],
+        },
+    }));
+}
 // ─── Snapshot for reconnection ────────────────────────────────────────────────
 /**
  * Build the reconnect payload for a specific player.
@@ -109,10 +144,27 @@ function buildReconnectSnapshot(session, playerId) {
     const player = session.players.get(playerId);
     if (!player)
         throw new Error(`Player ${playerId} not found in session`);
+    const publicDyingRescue = session.dyingRescue
+        ? {
+            playerId: session.dyingRescue.playerId,
+            rescueDeadlineAt: session.dyingRescue.startedAt + session.config.dyingRescueTotalMs,
+        }
+        : null;
+    const publicPause = session.status === GameSession_types_1.GameStatus.PAUSED &&
+        session.pausedAt !== null &&
+        session.disconnectedCurrentPlayerId
+        ? {
+            disconnectedPlayerId: session.disconnectedCurrentPlayerId,
+            reconnectDeadlineAt: session.pausedAt + session.config.reconnectWindowMs,
+        }
+        : null;
     return {
         selfView: toSelfView(player, session),
+        rescueDetail: (0, BankruptcyResolver_1.buildDyingRescueDetail)(session, playerId),
+        tradeDetails: serializePrivateTradeDetails(session, playerId),
         gameSnapshot: {
             roomId: session.id,
+            hostId: session.hostId,
             status: session.status,
             currentPhase: session.currentPhase,
             currentTurnPlayerId: session.playerOrder[session.currentPlayerIndex] ?? null,
@@ -122,6 +174,8 @@ function buildReconnectSnapshot(session, playerId) {
             players: serializePublicPlayers(session),
             activeAuction: serializeActiveAuction(session),
             pendingTrades: serializePendingTrades(session),
+            dyingRescue: publicDyingRescue,
+            pause: publicPause,
             winners: [...session.winnerIds],
         },
     };

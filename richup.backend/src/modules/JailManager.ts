@@ -10,7 +10,7 @@
 import type { Server } from 'socket.io';
 import type { PlayerId } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
-import type { S2C_JailAutoReleased } from '../types/Events.types';
+import type { S2C_JailAutoReleased, S2C_JailReleased } from '../types/Events.types';
 import { BOARD_CONFIG } from '../config/GameConfig';
 import { requirePlayer, cashChange } from '../state/GameSession';
 import { teleportPlayer } from './MovementEngine';
@@ -19,6 +19,8 @@ import { TurnPhase } from '../types/GameSession.types';
 import { broadcastToRoom } from '../socket/emitters/broadcast';
 import { InsufficientFundsError, RuleViolationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { voidTradesInvolvingPlayer } from './TradeLifecycle';
+import { TradeVoidReason } from '../types/Trade.types';
 
 const JAIL_POSITION = BOARD_CONFIG.FIXED_ANCHORS.JAIL;
 
@@ -34,6 +36,7 @@ export function sendToJail(session: GameSession, playerId: PlayerId, io: Server)
   teleportPlayer(session, playerId, JAIL_POSITION, io);
   player.inJail = true;
   player.jailTurnsWaited = 0;
+  voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_JAILED, io);
 
   logger.info({ roomId: session.id, playerId }, 'Player sent to jail');
 }
@@ -43,7 +46,7 @@ export function sendToJail(session: GameSession, playerId: PlayerId, io: Server)
 /**
  * Player pays bail to leave jail immediately.
  * Deducts bail cost and clears jail flags.
- * Transitions to ROLLING_DICE so the player can still move this turn.
+ * Transitions to WAITING_FOR_ACTION so the player can still roll this turn.
  */
 export function payBail(session: GameSession, playerId: PlayerId, io: Server): void {
   const player = requirePlayer(session, playerId);
@@ -58,7 +61,10 @@ export function payBail(session: GameSession, playerId: PlayerId, io: Server): v
   cashChange(session, playerId, -bailCost, 'BAIL_PAID', io);
   releaseFromJail(player);
 
-  StateMachine.transition(session, TurnPhase.ROLLING_DICE);
+  const releasedPayload: S2C_JailReleased = { playerId };
+  broadcastToRoom(io, session.id, 'JAIL_RELEASED', releasedPayload);
+
+  StateMachine.transition(session, TurnPhase.WAITING_FOR_ACTION);
   logger.info({ roomId: session.id, playerId }, 'Player paid bail');
 }
 

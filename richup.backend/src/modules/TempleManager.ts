@@ -11,11 +11,12 @@
 import type { Server } from 'socket.io';
 import type { PlayerId, TileId, Money } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
+import { TurnPhase } from '../types/GameSession.types';
 import type { TempleTile } from '../types/Tile.types';
 import { TileType } from '../types/Tile.types';
 import type { S2C_TempleLit, S2C_PropCardDrawn, S2C_RentCharged } from '../types/Events.types';
 import { PropCardType } from '../types/PropCard.types';
-import { requirePlayer, cashChange } from '../state/GameSession';
+import { requirePlayer, cashChange, syncPropCards } from '../state/GameSession';
 import { broadcastToRoom } from '../socket/emitters/broadcast';
 import { computeRent } from './RentCalculator';
 import { NotFoundError, RuleViolationError } from '../utils/errors';
@@ -44,6 +45,8 @@ export interface TempleEventResult {
   ownerPrayed: boolean;    // Owner paid to pray
   propCardDrawn: boolean;  // Owner drew a card from lit temple
   rentCharged: boolean;    // Non-owner paid toll
+  requiresRescue: boolean; // Non-owner cannot pay the toll
+  amountOwed: Money;
 }
 
 /**
@@ -60,7 +63,13 @@ export function handleTempleLanding(
   if (!tile || tile.type !== TileType.TEMPLE) throw new NotFoundError('TempleTile', tileId);
 
   const temple = tile as TempleTile;
-  const result: TempleEventResult = { ownerPrayed: false, propCardDrawn: false, rentCharged: false };
+  const result: TempleEventResult = {
+    ownerPrayed: false,
+    propCardDrawn: false,
+    rentCharged: false,
+    requiresRescue: false,
+    amountOwed: 0 as Money,
+  };
 
   if (!temple.ownerId) {
     // Unowned — no effect (player can buy in EVENT_TRIGGER phase)
@@ -74,6 +83,7 @@ export function handleTempleLanding(
       const player = requirePlayer(session, landingPlayerId);
       const propType = randomPropType();
       player.propCards.push({ id: uuidv4(), type: propType, acquiredAt: Date.now() });
+      syncPropCards(session, landingPlayerId, io);
 
       const drawnPayload: S2C_PropCardDrawn = { playerId: landingPlayerId };
       broadcastToRoom(io, session.id, 'PROP_CARD_DRAWN', drawnPayload);
@@ -89,6 +99,13 @@ export function handleTempleLanding(
     // Non-owner: charge pass-through toll
     const rentResult = computeRent(session, tileId, landingPlayerId);
     if (rentResult.amount > 0) {
+      const landingPlayer = requirePlayer(session, landingPlayerId);
+      if (landingPlayer.cash < rentResult.amount) {
+        result.requiresRescue = true;
+        result.amountOwed = rentResult.amount;
+        return result;
+      }
+
       cashChange(session, landingPlayerId, -(rentResult.amount as Money), 'TEMPLE_TOLL', io);
 
       if (rentResult.recipient !== BANK_ID) {
@@ -100,6 +117,8 @@ export function handleTempleLanding(
         to: rentResult.recipient,
         tileId,
         amount: rentResult.amount,
+        phase: session.pendingExtraRoll ? TurnPhase.WAITING_FOR_ACTION : TurnPhase.END_TURN_PENDING,
+        availableActions: session.pendingExtraRoll ? ['ROLL_DICE'] : ['END_TURN'],
       };
       broadcastToRoom(io, session.id, 'RENT_CHARGED', payload);
       result.rentCharged = true;
@@ -129,7 +148,7 @@ export function ownerPrays(
   if (temple.isLit) throw new RuleViolationError('Temple is already lit');
 
   const player = requirePlayer(session, playerId);
-  const prayFee = temple.prayFee;
+  const prayFee = session.config.templePrayFee;
   if (player.cash < prayFee) {
     throw new RuleViolationError('Insufficient funds to pray');
   }
@@ -137,7 +156,7 @@ export function ownerPrays(
   cashChange(session, playerId, -prayFee, 'TEMPLE_PRAY', io);
 
   temple.litCount++;
-  if (temple.litCount >= temple.litThreshold) {
+  if (temple.litCount >= session.config.templeLitThreshold) {
     temple.isLit = true;
     const litPayload: S2C_TempleLit = { tileId, isLit: true };
     broadcastToRoom(io, session.id, 'TEMPLE_LIT', litPayload);

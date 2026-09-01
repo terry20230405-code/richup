@@ -22,7 +22,9 @@ const VALID_TRANSITIONS = new Map([
     ],
     [
         GameSession_types_1.TurnPhase.ROLLING_DICE,
-        new Set([GameSession_types_1.TurnPhase.MOVING, GameSession_types_1.TurnPhase.JAIL_DECISION, GameSession_types_1.TurnPhase.WAITING_FOR_ACTION]),
+        // END_TURN_PENDING: rolled but no move happens (sent to jail on 3rd double,
+        // or failed the jail-escape roll) — turn ends immediately.
+        new Set([GameSession_types_1.TurnPhase.MOVING, GameSession_types_1.TurnPhase.JAIL_DECISION, GameSession_types_1.TurnPhase.WAITING_FOR_ACTION, GameSession_types_1.TurnPhase.END_TURN_PENDING]),
     ],
     [
         GameSession_types_1.TurnPhase.MOVING,
@@ -39,15 +41,11 @@ const VALID_TRANSITIONS = new Map([
     ],
     [
         GameSession_types_1.TurnPhase.AUCTION_IN_PROGRESS,
-        new Set([GameSession_types_1.TurnPhase.END_TURN_PENDING, GameSession_types_1.TurnPhase.DYING_RESCUE]),
-    ],
-    [
-        GameSession_types_1.TurnPhase.BUILD_PHASE,
-        new Set([GameSession_types_1.TurnPhase.END_TURN_PENDING]),
+        new Set([GameSession_types_1.TurnPhase.END_TURN_PENDING, GameSession_types_1.TurnPhase.WAITING_FOR_ACTION, GameSession_types_1.TurnPhase.DYING_RESCUE]),
     ],
     [
         GameSession_types_1.TurnPhase.JAIL_DECISION,
-        new Set([GameSession_types_1.TurnPhase.ROLLING_DICE, GameSession_types_1.TurnPhase.END_TURN_PENDING, GameSession_types_1.TurnPhase.MOVING]),
+        new Set([GameSession_types_1.TurnPhase.ROLLING_DICE, GameSession_types_1.TurnPhase.END_TURN_PENDING, GameSession_types_1.TurnPhase.MOVING, GameSession_types_1.TurnPhase.WAITING_FOR_ACTION]),
     ],
     [
         GameSession_types_1.TurnPhase.DYING_RESCUE,

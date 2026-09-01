@@ -3,8 +3,8 @@
  *
  * Rules (per PRD):
  *  - Either party can propose a trade at almost any phase
- *  - Entering DYING_RESCUE voids existing outgoing trades for the dying player
- *  - The dying player can still INITIATE new trades
+ *  - Entering DYING_RESCUE voids all existing trades involving the dying player
+ *  - New rescue trades must involve the dying player
  *  - Cash amounts in TRADE_PROPOSED are private (directed to both parties only)
  *  - TRADE_COMPLETED reveals cash amount publicly
  *  - Forced-trade card cannot target tiles with buildings (enforced in PropCardHandler)
@@ -14,8 +14,10 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Server } from 'socket.io';
 import type { PlayerId, TileId, Money } from '../types/Common.types';
 import type { GameSession } from '../types/GameSession.types';
+import { GameStatus, TurnPhase } from '../types/GameSession.types';
+import { PlayerStatus } from '../types/Player.types';
 import type { Trade, TradeOffer, TradePublicView } from '../types/Trade.types';
-import { TradeStatus, TradeVoidReason } from '../types/Trade.types';
+import { TradeStatus } from '../types/Trade.types';
 import type {
   S2C_TradeProposed,
   S2C_TradeAccepted,
@@ -24,11 +26,16 @@ import type {
   S2C_TradeCompleted,
   S2C_TradeDetail,
 } from '../types/Events.types';
-import { requirePlayer, cashChange } from '../state/GameSession';
+import { requirePlayer, cashChange, syncPropCards } from '../state/GameSession';
+import { assertNotBidLocked } from './AuctionManager';
 import { broadcastToRoom } from '../socket/emitters/broadcast';
 import { emitToPlayer } from '../socket/emitters/direct';
 import { NotFoundError, RuleViolationError, InsufficientFundsError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { rescueDyingPlayer, refreshDyingRescueActivity } from './BankruptcyResolver';
+import { advanceToNextTurn } from './TurnFlow';
+
+export { voidTradesInvolvingPlayer } from './TradeLifecycle';
 
 // ─── Propose ──────────────────────────────────────────────────────────────────
 
@@ -40,6 +47,26 @@ export function proposeTrade(
   responderOffer: TradeOffer,
   io: Server,
 ): string {
+  if (proposerId === responderId) {
+    throw new RuleViolationError('Cannot trade with yourself');
+  }
+
+  assertTradeExecutionAvailable(session);
+  assertTradeParticipant(session, proposerId);
+  assertTradeParticipant(session, responderId);
+
+  if (isEmptyOffer(proposerOffer) && isEmptyOffer(responderOffer)) {
+    throw new RuleViolationError('A trade must exchange at least one asset');
+  }
+
+  if (session.currentPhase === TurnPhase.DYING_RESCUE) {
+    const dyingPlayerId = session.dyingRescue?.playerId;
+    if (!dyingPlayerId || (proposerId !== dyingPlayerId && responderId !== dyingPlayerId)) {
+      throw new RuleViolationError('A rescue trade must involve the dying player');
+    }
+    refreshDyingRescueActivity(session, dyingPlayerId);
+  }
+
   validateOffer(session, proposerId, proposerOffer);
   validateOffer(session, responderId, responderOffer);
 
@@ -68,7 +95,7 @@ export function proposeTrade(
     status: TradeStatus.PENDING,
     proposedAt: trade.proposedAt,
   };
-  const broadcastPayload: S2C_TradeProposed = { trade: publicView };
+  const broadcastPayload: S2C_TradeProposed = publicView;
   broadcastToRoom(io, session.id, 'TRADE_PROPOSED', broadcastPayload);
 
   // Send full details (with cash) to both parties only
@@ -92,13 +119,28 @@ export function acceptTrade(
   if (trade.responderId !== responderId) throw new RuleViolationError('Not the trade responder');
   if (trade.status !== TradeStatus.PENDING) throw new RuleViolationError('Trade is no longer pending');
 
+  assertTradeExecutionAvailable(session);
+  assertTradeParticipant(session, trade.proposerId);
+  assertTradeParticipant(session, trade.responderId);
+
+  const dyingPlayerId = session.currentPhase === TurnPhase.DYING_RESCUE
+    ? session.dyingRescue?.playerId ?? null
+    : null;
+  if (
+    dyingPlayerId &&
+    trade.proposerId !== dyingPlayerId &&
+    trade.responderId !== dyingPlayerId
+  ) {
+    throw new RuleViolationError('A rescue trade must involve the dying player');
+  }
+
   // Final validation (re-check ownership and funds)
   validateOffer(session, trade.proposerId, trade.proposerOffer);
   validateOffer(session, trade.responderId, trade.responderOffer);
 
   // Execute transfers
   executeTrade(session, trade, io);
-  trade.status = TradeStatus.ACCEPTED;
+  trade.status = TradeStatus.COMPLETED;
   trade.resolvedAt = Date.now();
   session.activeTrades.delete(tradeId);
 
@@ -119,6 +161,13 @@ export function acceptTrade(
     cashAmount: Math.abs(netCash) as Money,
   };
   broadcastToRoom(io, session.id, 'TRADE_COMPLETED', completedPayload);
+
+  if (dyingPlayerId) {
+    refreshDyingRescueActivity(session, dyingPlayerId);
+    if (rescueDyingPlayer(session, dyingPlayerId, io)) {
+      advanceToNextTurn(session, io);
+    }
+  }
 
   logger.info({ roomId: session.id, tradeId }, 'Trade completed');
 }
@@ -163,31 +212,6 @@ export function cancelTrade(
   broadcastToRoom(io, session.id, 'TRADE_CANCELLED', payload);
 }
 
-/**
- * Void all outgoing pending trades from a specific proposer.
- * Called when a player enters DYING_RESCUE.
- */
-export function voidOutgoingTrades(
-  session: GameSession,
-  proposerId: PlayerId,
-  reason: TradeVoidReason,
-  io: Server,
-): void {
-  for (const [tradeId, trade] of session.activeTrades) {
-    if (trade.proposerId === proposerId && trade.status === TradeStatus.PENDING) {
-      trade.status = TradeStatus.VOIDED;
-      trade.voidReason = reason;
-      trade.resolvedAt = Date.now();
-      session.activeTrades.delete(tradeId);
-
-      broadcastToRoom(io, session.id, 'TRADE_VOIDED', {
-        tradeId,
-        reason,
-      });
-    }
-  }
-}
-
 // ─── Execution ────────────────────────────────────────────────────────────────
 
 function executeTrade(session: GameSession, trade: Trade, io: Server): void {
@@ -207,6 +231,10 @@ function executeTrade(session: GameSession, trade: Trade, io: Server): void {
   }
   for (const cardId of (responderOffer.propCardIds ?? [])) {
     transferPropCard(session, cardId, responderId, proposerId);
+  }
+  if ((proposerOffer.propCardIds?.length ?? 0) > 0 || (responderOffer.propCardIds?.length ?? 0) > 0) {
+    syncPropCards(session, proposerId, io);
+    syncPropCards(session, responderId, io);
   }
 
   // Cash transfers (net zero in terms of game economy)
@@ -248,9 +276,24 @@ function transferPropCard(session: GameSession, cardId: string, fromId: PlayerId
 function validateOffer(session: GameSession, playerId: PlayerId, offer: TradeOffer): void {
   const player = requirePlayer(session, playerId);
 
+  if (offer.cash !== undefined && (!Number.isInteger(offer.cash) || offer.cash < 0)) {
+    throw new RuleViolationError('Trade cash must be a non-negative integer');
+  }
+
+  if (new Set(offer.tileIds).size !== offer.tileIds.length) {
+    throw new RuleViolationError('A trade cannot offer the same tile more than once');
+  }
+  const cardIds = offer.propCardIds ?? [];
+  if (new Set(cardIds).size !== cardIds.length) {
+    throw new RuleViolationError('A trade cannot offer the same prop card more than once');
+  }
+
   // Cash check
   if ((offer.cash ?? 0) > 0 && player.cash < (offer.cash ?? 0)) {
     throw new InsufficientFundsError(playerId, offer.cash ?? 0, player.cash);
+  }
+  if ((offer.cash ?? 0) > 0) {
+    assertNotBidLocked(session, playerId, offer.cash as Money);
   }
 
   // Tile ownership + no buildings check
@@ -260,6 +303,9 @@ function validateOffer(session: GameSession, playerId: PlayerId, offer: TradeOff
     if ((tile as { ownerId: PlayerId | null }).ownerId !== playerId) {
       throw new RuleViolationError(`Player ${playerId} does not own tile ${tileId}`);
     }
+    if ('buildingLevel' in tile && tile.buildingLevel > 0) {
+      throw new RuleViolationError(`Tile ${tileId} must have no buildings before trading`);
+    }
   }
 
   // Prop card ownership
@@ -268,6 +314,32 @@ function validateOffer(session: GameSession, playerId: PlayerId, offer: TradeOff
       throw new RuleViolationError(`Player ${playerId} does not have card ${cardId}`);
     }
   }
+}
+
+function assertTradeExecutionAvailable(session: GameSession): void {
+  if (session.status !== GameStatus.IN_PROGRESS) {
+    throw new RuleViolationError('Trades cannot be proposed or accepted while the game is not running');
+  }
+}
+
+function assertTradeParticipant(session: GameSession, playerId: PlayerId): void {
+  const player = requirePlayer(session, playerId);
+  if (!player.isConnected || player.status === PlayerStatus.DISCONNECTED) {
+    throw new RuleViolationError(`Player ${playerId} is disconnected`);
+  }
+  if (player.status === PlayerStatus.BANKRUPT) {
+    throw new RuleViolationError(`Player ${playerId} is bankrupt`);
+  }
+  if (
+    player.status === PlayerStatus.DYING &&
+    (session.currentPhase !== TurnPhase.DYING_RESCUE || session.dyingRescue?.playerId !== playerId)
+  ) {
+    throw new RuleViolationError(`Player ${playerId} is not in an active rescue window`);
+  }
+}
+
+function isEmptyOffer(offer: TradeOffer): boolean {
+  return (offer.cash ?? 0) === 0 && offer.tileIds.length === 0 && (offer.propCardIds?.length ?? 0) === 0;
 }
 
 function requireTrade(session: GameSession, tradeId: string): Trade {

@@ -1,7 +1,5 @@
-import type { Socket } from 'socket.io-client';
-
 import { pinia } from '@/stores/pinia';
-import { useGameStore } from '@/stores/useGameStore';
+import { useGameStore, type DirectorEffect } from '@/stores/useGameStore';
 import { usePlayersStore } from '@/stores/usePlayersStore';
 import { useSelfStore } from '@/stores/useSelfStore';
 import { PropCardType } from '@/types';
@@ -21,12 +19,15 @@ import type {
   DiceOverridePayload,
   DiceRolledPayload,
   DyingRescueAfkWarningPayload,
+  DyingRescueDetailPayload,
   ForcedTradeExecutedPayload,
   GameOverPayload,
   GamePausedPayload,
   GameResumedPayload,
   ImmunityUsedPayload,
   JailAutoReleasedPayload,
+  JailReleasedPayload,
+  LobbyStateUpdatedPayload,
   MapGeneratedPayload,
   OperationBlockedPayload,
   PlayerBankruptPayload,
@@ -38,6 +39,7 @@ import type {
   PlunderExecutedPayload,
   PriceHikeExpiredPayload,
   PropCardDrawnPayload,
+  PropCardsUpdatedPayload,
   PropCardUsedPayload,
   PropertyFreedPayload,
   PropertyMortgagedPayload,
@@ -60,21 +62,26 @@ import type {
   TradeRejectedPayload,
   TradeVoidedPayload,
   TurnEndedPayload,
+  TurnReadyPayload,
   TurnStartedPayload,
   WhaleFallPayload,
+  ClientToServerEvents,
+  ServerToClientEvents,
 } from '@/types/socket';
+import type { Socket } from 'socket.io-client';
 
 import { useEventLogStore } from '@/stores/useEventLogStore';
+import { useFloatingTextStore } from '@/stores/useFloatingTextStore';
 
 import { clearStoredSocketSession } from './storage';
 
 const PROP_CARD_LABELS: Record<string, string> = {
-  [PropCardType.FORCED_TRADE]: '强制交换',
-  [PropCardType.REMOTE_DICE]: '遥控骰子',
-  [PropCardType.PLUNDER]: '掠夺',
-  [PropCardType.IMMUNITY]: '豁免',
-  [PropCardType.AUDIT]: '验资',
-  [PropCardType.PRICE_HIKE]: '涨价',
+  [PropCardType.FORCED_TRADE]: 'Forced Trade',
+  [PropCardType.REMOTE_DICE]: 'Remote Dice',
+  [PropCardType.PLUNDER]: 'Plunder',
+  [PropCardType.IMMUNITY]: 'Immunity',
+  [PropCardType.AUDIT]: 'Audit',
+  [PropCardType.PRICE_HIKE]: 'Price Hike',
 };
 
 let listenersBound = false;
@@ -84,7 +91,9 @@ const isInvalidReconnectRejection = (payload: ActionRejectedPayload): boolean =>
   && payload.code === 'RULE_VIOLATION'
   && (payload.reason === 'Room not found' || payload.reason === 'Player not found');
 
-export const registerSocketListeners = (socket: Socket): void => {
+export const registerSocketListeners = (
+  socket: Socket<ServerToClientEvents, ClientToServerEvents>,
+): void => {
   if (listenersBound) {
     return;
   }
@@ -95,12 +104,64 @@ export const registerSocketListeners = (socket: Socket): void => {
   const selfStore = useSelfStore(pinia);
   const playersStore = usePlayersStore(pinia);
   const eventLogStore = useEventLogStore(pinia);
+  const floatingTextStore = useFloatingTextStore(pinia);
+
+  const queueOrApplyDirectorEffects = (effects: DirectorEffect[]): void => {
+    if (!gameStore.isDirectorBlocking) {
+      for (const effect of effects) {
+        if (effect.type === 'DICE_REVEAL') {
+          gameStore.setCurrentPhase(effect.payload.phase);
+          gameStore.setAvailableActions(effect.payload.availableActions);
+          eventLogStore.push(effect.payload.logType, effect.payload.logMessage);
+          continue;
+        }
+        if (effect.type === 'PLAYER_MOVED') {
+          playersStore.updateMovement(effect.payload.playerId, effect.payload.toPosition, effect.payload.fromPosition);
+          if (effect.payload.playerId === selfStore.id) {
+            selfStore.setMovement(effect.payload.toPosition, effect.payload.fromPosition);
+          }
+          continue;
+        }
+        if (effect.type === 'TURN_READY') {
+          gameStore.setCurrentTurnPlayerId(effect.payload.playerId);
+          gameStore.setCurrentPhase(effect.payload.phase);
+          gameStore.setAvailableActions(effect.payload.availableActions);
+          continue;
+        }
+        if (effect.type === 'RENT_CHARGED') {
+          eventLogStore.push(effect.payload.logType, effect.payload.logMessage);
+          if (effect.payload.phase) {
+            gameStore.setCurrentPhase(effect.payload.phase);
+            gameStore.setAvailableActions(effect.payload.availableActions);
+          }
+          continue;
+        }
+        gameStore.setCurrentTurnPlayerId(effect.payload.playerId);
+        gameStore.setCurrentPhase(effect.payload.phase);
+        gameStore.setAvailableActions(effect.payload.availableActions);
+        gameStore.setPendingTaxAmount(effect.payload.taxAmount);
+        eventLogStore.push(effect.payload.logType, effect.payload.logMessage);
+      }
+      return;
+    }
+
+    for (const effect of effects) {
+      gameStore.queueDirectorEffect(effect);
+    }
+  };
+
+  const flushDirectorEffects = (): void => {
+    const effects = [...gameStore.director.pendingEffects];
+    gameStore.flushDirectorEffects();
+    queueOrApplyDirectorEffects(effects);
+  };
 
   socket.on('MAP_GENERATED', (payload: MapGeneratedPayload) => {
     gameStore.setMap(payload.board, payload.playerOrder);
   });
 
   socket.on('TURN_STARTED', (payload: TurnStartedPayload) => {
+    gameStore.resetDirector();
     gameStore.setStatus('IN_PROGRESS');
     gameStore.startTurn(payload.playerId, payload.turnNumber, payload.phase);
   });
@@ -109,30 +170,48 @@ export const registerSocketListeners = (socket: Socket): void => {
     gameStore.setAvailableActions([]);
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 结束回合`);
+    eventLogStore.push('info', `${name} ended their turn`);
   });
 
   socket.on('DICE_ROLLED', (payload: DiceRolledPayload) => {
-    gameStore.setCurrentPhase('MOVING');
-    gameStore.setAvailableActions([]);
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    const doubleTag = payload.isDouble ? ' 双！' : '';
-    eventLogStore.push('info', `${name} 掷出 ${payload.die1}+${payload.die2}=${payload.totalSteps}${doubleTag}`);
+    const doubleTag = payload.isDouble ? ' Double!' : '';
+
+    gameStore.beginDirectedDiceSequence([payload.die1, payload.die2]);
+    gameStore.queueDirectorEffect({
+      type: 'DICE_REVEAL',
+      payload: {
+        phase: 'MOVING',
+        availableActions: [],
+        logType: 'info',
+        logMessage: `${name} rolled ${payload.die1}+${payload.die2}=${payload.totalSteps}${doubleTag}`,
+      },
+    });
+
+    const revealDelay = Math.max((gameStore.director.windowEndsAt ?? Date.now()) - Date.now(), 0);
+    window.setTimeout(() => {
+      flushDirectorEffects();
+    }, revealDelay);
   });
 
   socket.on('DICE_OVERRIDE', (payload: DiceOverridePayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 遥控骰子：指定 ${payload.steps} 步`);
+    eventLogStore.push('info', `${name} used Remote Dice and selected ${payload.steps} steps`);
   });
 
   socket.on('PLAYER_MOVED', (payload: PlayerMovedPayload) => {
-    playersStore.updateMovement(payload.playerId, payload.toPosition, payload.fromPosition);
-
-    if (payload.playerId === selfStore.id) {
-      selfStore.setMovement(payload.toPosition, payload.fromPosition);
-    }
+    queueOrApplyDirectorEffects([
+      {
+        type: 'PLAYER_MOVED',
+        payload: {
+          playerId: payload.playerId,
+          toPosition: payload.toPosition,
+          fromPosition: payload.fromPosition,
+        },
+      },
+    ]);
   });
 
   socket.on('GAME_OVER', (payload: GameOverPayload) => {
@@ -145,48 +224,70 @@ export const registerSocketListeners = (socket: Socket): void => {
 
     const winnerIds = winners.length > 0 ? winners : payload.winnerIds;
     gameStore.setWinners(winnerIds);
-    eventLogStore.push('info', `游戏结束，获胜者：${winnerIds.join(', ')}`);
+    eventLogStore.push('info', `Game over. Winner: ${winnerIds.join(', ')}`);
   });
 
   socket.on('START_PASSED', (payload: StartPassedPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('positive', `${name} 经过起点，获得 $${payload.bonusAmount}`);
+    eventLogStore.push('positive', `${name} passed START and received $${payload.bonusAmount}`);
   });
 
   socket.on('START_LANDED', (payload: StartLandedPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const total = payload.passBonusAmount + payload.landBonusAmount;
-    eventLogStore.push('positive', `${name} 停在起点，获得 $${total}`);
+    eventLogStore.push('positive', `${name} landed on START and received $${total}`);
   });
 
   socket.on('TILE_EVENT', (payload: TileEventPayload) => {
-    gameStore.setCurrentTurnPlayerId(payload.playerId);
-    gameStore.setCurrentPhase(payload.phase);
-    gameStore.setAvailableActions(payload.availableActions);
-    gameStore.setPendingTaxAmount(payload.taxAmount ?? null);
-
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `${name} 落在【${tileName}】`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+
+    queueOrApplyDirectorEffects([
+      {
+        type: 'TILE_EVENT',
+        payload: {
+          playerId: payload.playerId,
+          tileId: payload.tileId,
+          phase: payload.phase,
+          availableActions: payload.availableActions,
+          taxAmount: payload.taxAmount ?? null,
+          logType: 'info',
+          logMessage: `${name} landed on [${tileName}]`,
+        },
+      },
+    ]);
+  });
+
+  socket.on('TURN_READY', (payload: TurnReadyPayload) => {
+    queueOrApplyDirectorEffects([
+      {
+        type: 'TURN_READY',
+        payload: {
+          playerId: payload.playerId,
+          phase: payload.phase,
+          availableActions: payload.availableActions,
+        },
+      },
+    ]);
   });
 
   socket.on('PROPERTY_PURCHASED', (payload: PropertyPurchasedPayload) => {
     gameStore.setTileOwner(payload.tileId, payload.buyerId);
     gameStore.setAvailableActions([]);
 
-    if (payload.buyerId === selfStore.id) {
+    if (payload.buyerId === selfStore.id && gameStore.boardById[payload.tileId]?.type === 'PROPERTY') {
       selfStore.addConstructibleTile(payload.tileId);
     }
 
     const buyer = playersStore.players[payload.buyerId];
     const buyerName = buyer?.nickname ?? payload.buyerId;
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `${buyerName} 购入【${tileName}】（$${payload.price}）`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('info', `${buyerName} purchased [${tileName}] for $${payload.price}`);
   });
 
   socket.on('PROPERTY_MORTGAGED', (payload: PropertyMortgagedPayload) => {
@@ -194,17 +295,20 @@ export const registerSocketListeners = (socket: Socket): void => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `${name} 抵押了【${tileName}】（+$${payload.mortgageValue}）`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('info', `${name} mortgaged [${tileName}] (+$${payload.mortgageValue})`);
   });
 
   socket.on('PROPERTY_UNMORTGAGED', (payload: PropertyUnmortgagedPayload) => {
     gameStore.setTileMortgage(payload.tileId, false);
+    if (payload.playerId === selfStore.id && gameStore.boardById[payload.tileId]?.type === 'PROPERTY') {
+      selfStore.addConstructibleTile(payload.tileId);
+    }
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `${name} 赎回了【${tileName}】（-$${payload.redemptionCost}）`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('info', `${name} unmortgaged [${tileName}] (-$${payload.redemptionCost})`);
   });
 
   socket.on('PROPERTY_FREED', (payload: PropertyFreedPayload) => {
@@ -217,16 +321,22 @@ export const registerSocketListeners = (socket: Socket): void => {
     }
 
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('warn', `【${tileName}】已解除所有权`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('warn', `[${tileName}] has been released`);
   });
 
   socket.on('BUILDING_BUILT', (payload: BuildingBuiltPayload) => {
     gameStore.setTileBuildingLevel(payload.tileId, payload.newBuildingLevel);
+    const tile = gameStore.boardById[payload.tileId];
+    const name = playersStore.players[payload.ownerId]?.nickname ?? payload.ownerId;
+    eventLogStore.push('info', `${name} upgraded 【${tile?.name ?? `Tile ${payload.tileId}`}】 to level ${payload.newBuildingLevel}`);
   });
 
   socket.on('BUILDING_SOLD', (payload: BuildingSoldPayload) => {
     gameStore.setTileBuildingLevel(payload.tileId, payload.newBuildingLevel);
+    const tile = gameStore.boardById[payload.tileId];
+    const name = playersStore.players[payload.ownerId]?.nickname ?? payload.ownerId;
+    eventLogStore.push('info', `${name} downgraded 【${tile?.name ?? `Tile ${payload.tileId}`}】 to level ${payload.newBuildingLevel}`);
   });
 
   socket.on('RENT_CHARGED', (payload: RentChargedPayload) => {
@@ -234,36 +344,61 @@ export const registerSocketListeners = (socket: Socket): void => {
     const fromName = fromPlayer?.nickname ?? payload.from;
     const toPlayer = playersStore.players[payload.to];
     const toName = toPlayer?.nickname ?? payload.to;
-    // Payer sees red, recipient sees gold
-    if (payload.from === selfStore.id) {
-      eventLogStore.push('warn', `${fromName} → ${toName} 租金 $${payload.amount}`);
-    } else if (payload.to === selfStore.id) {
-      eventLogStore.push('positive', `${fromName} → ${toName} 租金 $${payload.amount}`);
-    } else {
-      eventLogStore.push('info', `${fromName} → ${toName} 租金 $${payload.amount}`);
-    }
+    const logMessage = `${fromName} paid ${toName} $${payload.amount} in rent`;
+    // Payer sees red, recipient sees gold, bystanders neutral.
+    const isPayer = payload.from === selfStore.id;
+    const logType: 'warn' | 'positive' | 'info' = isPayer
+      ? 'warn'
+      : payload.to === selfStore.id
+        ? 'positive'
+        : 'info';
+    const shouldEndTurn = isPayer && payload.phase === 'END_TURN_PENDING';
+
+    queueOrApplyDirectorEffects([
+      {
+        type: 'RENT_CHARGED',
+        payload: {
+          phase: shouldEndTurn ? 'END_TURN_PENDING' : null,
+          availableActions: payload.availableActions ?? ['END_TURN'],
+          logType,
+          logMessage,
+        },
+      },
+    ]);
   });
 
   socket.on('TAX_PAID', (payload: TaxPaidPayload) => {
     gameStore.setPendingTaxAmount(null);
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('warn', `${name} 缴税 $${payload.amount}`);
+    eventLogStore.push('warn', `${name} paid $${payload.amount} in tax`);
   });
 
   socket.on('CASINO_RESULT', (payload: CasinoResultPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    const delta = payload.cashDelta >= 0 ? `+${payload.cashDelta}` : `${payload.cashDelta}`;
-    eventLogStore.push('info', `${name} 赌场 ${payload.outcome}，${delta}`);
+    const outcomeLabels: Record<CasinoResultPayload['outcome'], string> = {
+      WIN: 'won',
+      LOSE: 'lost',
+      BREAK_EVEN: 'broke even',
+    };
+    const logType = payload.outcome === 'WIN' ? 'positive' : payload.outcome === 'LOSE' ? 'warn' : 'info';
+    const delta = payload.cashDelta === 0
+      ? 'cash unchanged'
+      : `${payload.cashDelta > 0 ? '+' : '-'}$${Math.abs(payload.cashDelta)}`;
+    eventLogStore.push(logType, `${name} ${outcomeLabels[payload.outcome]} at the casino, ${delta}`);
+    if (payload.playerId === selfStore.id && payload.phase === 'END_TURN_PENDING') {
+      gameStore.setCurrentPhase(payload.phase);
+      gameStore.setAvailableActions(payload.availableActions);
+    }
   });
 
   socket.on('SURPRISE_RESULT', (payload: SurpriseResultPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    let msg = `${name} 命运：${payload.cardDescription}`;
+    let msg = `${name}'s surprise: ${payload.cardDescription}`;
     if (payload.cashDelta !== undefined) {
-      msg += `（${payload.cashDelta >= 0 ? '+' : ''}${payload.cashDelta}）`;
+      msg += ` (${payload.cashDelta >= 0 ? '+' : ''}${payload.cashDelta})`;
     }
     eventLogStore.push('info', msg);
   });
@@ -271,7 +406,7 @@ export const registerSocketListeners = (socket: Socket): void => {
   socket.on('SURPRISE_RAMPAGE', (payload: SurpriseRampagePayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 触发狂奔！额外获得一次掷骰机会`);
+    eventLogStore.push('info', `${name} triggered Rampage and may roll again`);
   });
 
   socket.on('TEMPLE_LIT', (payload: TempleLitPayload) => {
@@ -280,11 +415,12 @@ export const registerSocketListeners = (socket: Socket): void => {
 
   socket.on('AUCTION_STARTED', (payload: AuctionStartedPayload) => {
     gameStore.setActiveAuction(payload.auction);
+    gameStore.setAvailableActions([]);
     gameStore.setCurrentPhase('AUCTION_IN_PROGRESS');
 
     const tile = gameStore.boardById[payload.auction.tileId];
-    const tileName = tile?.name ?? `格${payload.auction.tileId}`;
-    eventLogStore.push('info', `【${tileName}】开始拍卖，起拍价 $${payload.auction.currentBid}`);
+    const tileName = tile?.name ?? `Tile ${payload.auction.tileId}`;
+    eventLogStore.push('info', `[${tileName}] is up for auction at $${payload.auction.currentBid}`);
   });
 
   socket.on('AUCTION_BID_PLACED', (payload: AuctionBidPlacedPayload) => {
@@ -296,21 +432,22 @@ export const registerSocketListeners = (socket: Socket): void => {
 
     const bidder = playersStore.players[payload.bidderId];
     const bidderName = bidder?.nickname ?? payload.bidderId;
-    eventLogStore.push('info', `${bidderName} 出价 $${payload.bidAmount}`);
+    eventLogStore.push('info', `${bidderName} bid $${payload.bidAmount}`);
   });
 
   socket.on('AUCTION_PLAYER_PASSED', (payload: AuctionPlayerPassedPayload) => {
-    const auction = gameStore.activeAuction;
-    if (auction) {
+    if (gameStore.activeAuction?.id === payload.auctionId) {
       gameStore.patchAuction({
-        passedPlayerIds: [...auction.passedPlayerIds, payload.passedPlayerId],
-        activePlayerIds: auction.activePlayerIds.filter((id) => id !== payload.passedPlayerId),
+        activePlayerIds: payload.activePlayerIds,
+        passedPlayerIds: payload.passedPlayerIds,
+        currentLeaderId: payload.currentLeaderId,
+        currentBid: payload.currentBid,
       });
     }
 
     const player = playersStore.players[payload.passedPlayerId];
     const name = player?.nickname ?? payload.passedPlayerId;
-    eventLogStore.push('info', `${name} 放弃竞拍（剩余 ${payload.remainingActiveCount} 人）`);
+    eventLogStore.push('info', `${name} passed (${payload.remainingActiveCount} bidders remaining)`);
   });
 
   socket.on('AUCTION_HAMMER_DOWN', (payload: AuctionHammerDownPayload) => {
@@ -318,15 +455,15 @@ export const registerSocketListeners = (socket: Socket): void => {
     gameStore.setAvailableActions([]);
     gameStore.setTileOwner(payload.tileId, payload.winnerId);
 
-    if (payload.winnerId === selfStore.id) {
+    if (payload.winnerId === selfStore.id && gameStore.boardById[payload.tileId]?.type === 'PROPERTY') {
       selfStore.addConstructibleTile(payload.tileId);
     }
 
     const winner = playersStore.players[payload.winnerId];
     const winnerName = winner?.nickname ?? payload.winnerId;
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `${winnerName} 以 $${payload.finalPrice} 拍得【${tileName}】`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('info', `${winnerName} won [${tileName}] for $${payload.finalPrice}`);
   });
 
   socket.on('AUCTION_NO_SALE', (payload: AuctionNoSalePayload) => {
@@ -334,8 +471,8 @@ export const registerSocketListeners = (socket: Socket): void => {
     gameStore.setAvailableActions([]);
 
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `【${tileName}】流拍`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('info', `[${tileName}] received no bids`);
   });
 
   // ── Trade events ──────────────────────────────────────────────────────
@@ -348,31 +485,31 @@ export const registerSocketListeners = (socket: Socket): void => {
     const responderName = responder?.nickname ?? payload.responderId;
     const isSelfResponder = payload.responderId === selfStore.id;
     const msg = isSelfResponder
-      ? `${proposerName} 向你发起交易请求`
-      : `${proposerName} 向 ${responderName} 发起交易`;
+      ? `${proposerName} sent you a trade offer`
+      : `${proposerName} sent ${responderName} a trade offer`;
     eventLogStore.push('info', msg);
   });
 
   socket.on('TRADE_ACCEPTED', (payload: TradeAcceptedPayload) => {
     gameStore.updateTradeStatus(payload.tradeId, 'ACCEPTED');
-    eventLogStore.push('info', `交易已接受，等待执行…`);
+    eventLogStore.push('info', 'Trade accepted and awaiting execution...');
   });
 
   socket.on('TRADE_REJECTED', (payload: TradeRejectedPayload) => {
     gameStore.removeTrade(payload.tradeId);
-    eventLogStore.push('warn', `交易已被拒绝`);
+    eventLogStore.push('warn', 'Trade rejected');
   });
 
   socket.on('TRADE_CANCELLED', (payload: TradeCancelledPayload) => {
     gameStore.removeTrade(payload.tradeId);
-    eventLogStore.push('info', `交易已取消`);
+    eventLogStore.push('info', 'Trade cancelled');
   });
 
   socket.on('TRADE_COMPLETED', (payload: TradeCompletedPayload) => {
     for (const transfer of payload.tileTransfers) {
       gameStore.setTileOwner(transfer.tileId, transfer.newOwnerId);
 
-      if (transfer.newOwnerId === selfStore.id) {
+      if (transfer.newOwnerId === selfStore.id && gameStore.boardById[transfer.tileId]?.type === 'PROPERTY') {
         selfStore.addConstructibleTile(transfer.tileId);
       } else if (selfStore.constructibleSet.has(transfer.tileId)) {
         selfStore.removeConstructibleTile(transfer.tileId);
@@ -382,35 +519,42 @@ export const registerSocketListeners = (socket: Socket): void => {
     gameStore.removeTrade(payload.tradeId);
 
     const count = payload.tileTransfers.length;
-    const cashNote = payload.cashAmount > 0 ? `，含现金 $${payload.cashAmount}` : '';
-    eventLogStore.push('info', `交易完成，${count} 块地产易主${cashNote}`);
+    const cashNote = payload.cashAmount > 0 ? `, including $${payload.cashAmount} cash` : '';
+    eventLogStore.push('info', `Trade completed: ${count} properties transferred${cashNote}`);
   });
 
   socket.on('TRADE_VOIDED', (payload: TradeVoidedPayload) => {
     gameStore.removeTrade(payload.tradeId);
     const reasonLabels: Record<string, string> = {
-      PLAYER_BANKRUPT: '玩家破产',
-      GAME_ENDED: '游戏结束',
-      TIMEOUT: '超时',
+      PLAYER_ROLLED: 'player rolled the dice',
+      PLAYER_JAILED: 'player went to jail',
+      PLAYER_DYING: 'player entered rescue',
+      PLAYER_BANKRUPT: 'player went bankrupt',
+      PLAYER_DISCONNECTED: 'player disconnected',
+      GAME_ENDED: 'game ended',
     };
     const reason = reasonLabels[payload.reason] ?? payload.reason;
-    eventLogStore.push('warn', `交易已作废（${reason}）`);
+    eventLogStore.push('warn', `Trade voided (${reason})`);
   });
 
   // ── Prop card events ──────────────────────────────────────────────────
+
+  socket.on('PROP_CARDS_UPDATED', (payload: PropCardsUpdatedPayload) => {
+    selfStore.setPropCards(payload.propCards);
+  });
 
   socket.on('PROP_CARD_USED', (payload: PropCardUsedPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const cardLabel = PROP_CARD_LABELS[payload.cardType] ?? payload.cardType;
-    let msg = `${name} 使用【${cardLabel}】`;
+    let msg = `${name} used [${cardLabel}]`;
     if (payload.targetPlayerId) {
       const target = playersStore.players[payload.targetPlayerId];
       msg += ` → ${target?.nickname ?? payload.targetPlayerId}`;
     }
     if (payload.targetTileId != null) {
       const tile = gameStore.boardById[payload.targetTileId];
-      msg += ` 格${tile?.name ?? payload.targetTileId}`;
+      msg += ` on ${tile?.name ?? `Tile ${payload.targetTileId}`}`;
     }
     eventLogStore.push('info', msg);
   });
@@ -418,7 +562,7 @@ export const registerSocketListeners = (socket: Socket): void => {
   socket.on('PROP_CARD_DRAWN', (payload: PropCardDrawnPayload) => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 获得一张道具卡`);
+    eventLogStore.push('info', `${name} drew a prop card`);
   });
 
   socket.on('IMMUNITY_USED', (payload: ImmunityUsedPayload) => {
@@ -428,8 +572,8 @@ export const registerSocketListeners = (socket: Socket): void => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const tile = gameStore.boardById[payload.tileId];
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('info', `${name} 豁免了【${tileName}】的租金`);
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('info', `${name} used immunity against rent on [${tileName}]`);
   });
 
   socket.on('PRICE_HIKE_EXPIRED', (payload: PriceHikeExpiredPayload) => {
@@ -438,34 +582,34 @@ export const registerSocketListeners = (socket: Socket): void => {
     }
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 的涨价效果已结束`);
+    eventLogStore.push('info', `${name}'s Price Hike effect expired`);
   });
 
   socket.on('FORCED_TRADE_EXECUTED', (payload: ForcedTradeExecutedPayload) => {
-    gameStore.setTileOwner(payload.tileId, payload.to);
+    gameStore.setTileOwner(payload.tileId, payload.fromPlayerId);
 
-    if (payload.to === selfStore.id) {
+    if (payload.fromPlayerId === selfStore.id && gameStore.boardById[payload.tileId]?.type === 'PROPERTY') {
       selfStore.addConstructibleTile(payload.tileId);
     } else if (selfStore.constructibleSet.has(payload.tileId)) {
       selfStore.removeConstructibleTile(payload.tileId);
     }
 
-    const initiator = playersStore.players[payload.from];
-    const target = playersStore.players[payload.to];
+    const initiator = playersStore.players[payload.fromPlayerId];
+    const target = playersStore.players[payload.toPlayerId];
     const tile = gameStore.boardById[payload.tileId];
-    const iName = initiator?.nickname ?? payload.from;
-    const tName = target?.nickname ?? payload.to;
-    const tileName = tile?.name ?? `格${payload.tileId}`;
-    eventLogStore.push('warn', `${iName} 强制购得 ${tName} 的【${tileName}】（$${payload.price}）`);
+    const iName = initiator?.nickname ?? payload.fromPlayerId;
+    const tName = target?.nickname ?? payload.toPlayerId;
+    const tileName = tile?.name ?? `Tile ${payload.tileId}`;
+    eventLogStore.push('warn', `${iName} forcibly purchased ${tName}'s [${tileName}] for $${payload.price}`);
   });
 
   socket.on('PLUNDER_EXECUTED', (payload: PlunderExecutedPayload) => {
-    const plunderer = playersStore.players[payload.from];
-    const target = playersStore.players[payload.to];
-    const pName = plunderer?.nickname ?? payload.from;
-    const tName = target?.nickname ?? payload.to;
-    const amountStr = payload.amount > 0 ? `$${payload.amount}` : '（目标现金不足，获得 $0）';
-    eventLogStore.push('warn', `${pName} 掠夺了 ${tName} ${amountStr}`);
+    const plunderer = playersStore.players[payload.fromPlayerId];
+    const target = playersStore.players[payload.toPlayerId];
+    const pName = plunderer?.nickname ?? payload.fromPlayerId;
+    const tName = target?.nickname ?? payload.toPlayerId;
+    const amountStr = payload.amount > 0 ? `$${payload.amount}` : '$0 (target had insufficient cash)';
+    eventLogStore.push('warn', `${pName} plundered ${amountStr} from ${tName}`);
   });
 
   socket.on('JAIL_AUTO_RELEASED', (payload: JailAutoReleasedPayload) => {
@@ -477,12 +621,26 @@ export const registerSocketListeners = (socket: Socket): void => {
 
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 自动出狱`);
+    eventLogStore.push('info', `${name} was automatically released from jail`);
+  });
+
+  socket.on('JAIL_RELEASED', (payload: JailReleasedPayload) => {
+    playersStore.updateJailState(payload.playerId, false, 0);
+
+    if (payload.playerId === selfStore.id) {
+      selfStore.setJailState(false, 0);
+    }
+
+    const player = playersStore.players[payload.playerId];
+    const name = player?.nickname ?? payload.playerId;
+    eventLogStore.push('info', `${name} jail released after bail`);
   });
 
   socket.on('PLAYER_DYING', (payload: PlayerDyingPayload) => {
     playersStore.updateStatus(payload.playerId, 'DYING');
-    gameStore.setDyingPlayer(payload.playerId, payload.rescueWindowMs);
+    gameStore.setCurrentPhase(payload.phase);
+    gameStore.setAvailableActions([]);
+    gameStore.setDyingPlayer(payload.playerId, payload.rescueDeadlineAt);
 
     if (payload.playerId === selfStore.id) {
       selfStore.setStatus('DYING');
@@ -491,7 +649,11 @@ export const registerSocketListeners = (socket: Socket): void => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const seconds = Math.ceil(payload.rescueWindowMs / 1000);
-    eventLogStore.push('error', `${name} 陷入濒死！${seconds} 秒内自救或宣告破产`);
+    eventLogStore.push('error', `${name} needs rescue! Recover or declare bankruptcy within ${seconds} seconds`);
+  });
+
+  socket.on('DYING_RESCUE_DETAIL', (payload: DyingRescueDetailPayload) => {
+    gameStore.setSelfRescueDetail(payload);
   });
 
   socket.on('PLAYER_RESCUED', (payload: PlayerRescuedPayload) => {
@@ -504,16 +666,16 @@ export const registerSocketListeners = (socket: Socket): void => {
 
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
-    eventLogStore.push('info', `${name} 成功自救！`);
+    eventLogStore.push('info', `${name} recovered successfully!`);
   });
 
   socket.on('DYING_RESCUE_AFK_WARNING', (payload: DyingRescueAfkWarningPayload) => {
     if (payload.playerId === selfStore.id) {
-      eventLogStore.push('error', `⚠️ 自救超时警告！还剩 ${payload.remainingSeconds} 秒`);
+      eventLogStore.push('error', `⚠️ Rescue timeout warning! ${payload.remainingSeconds} seconds remaining`);
     } else {
       const player = playersStore.players[payload.playerId];
       const name = player?.nickname ?? payload.playerId;
-      eventLogStore.push('warn', `${name} 自救超时警告（剩余 ${payload.remainingSeconds} 秒）`);
+      eventLogStore.push('warn', `${name} has ${payload.remainingSeconds} seconds remaining to recover`);
     }
   });
 
@@ -531,8 +693,8 @@ export const registerSocketListeners = (socket: Socket): void => {
       ? (playersStore.players[payload.creditorId]?.nickname ?? payload.creditorId)
       : null;
     const msg = creditor
-      ? `${name} 破产，资产转移给 ${creditor}`
-      : `${name} 宣告破产，资产归还银行`;
+      ? `${name} went bankrupt; assets transferred to ${creditor}`
+      : `${name} declared bankruptcy; assets returned to the bank`;
     eventLogStore.push('error', msg);
   });
 
@@ -543,30 +705,35 @@ export const registerSocketListeners = (socket: Socket): void => {
     const player = playersStore.players[payload.playerId];
     const name = player?.nickname ?? payload.playerId;
     const reasonLabels: Record<string, string> = {
-      DISCONNECT_TIMEOUT: '断线超时',
-      AFK_IN_RESCUE: '自救期间挂机',
+      DISCONNECT_TIMEOUT: 'disconnect timeout',
+      AFK_IN_RESCUE: 'inactivity during rescue',
     };
     const reason = reasonLabels[payload.reason] ?? payload.reason;
-    eventLogStore.push('warn', `${name} 因${reason}强制破产`);
+    eventLogStore.push('warn', `${name} was forced into bankruptcy due to ${reason}`);
   });
 
   socket.on('PLAYER_DISCONNECTED', (payload: PlayerDisconnectedPayload) => {
-    playersStore.updateStatus(payload.playerId, 'DISCONNECTED');
+    playersStore.updateStatus(payload.playerId, payload.status);
     playersStore.updateConnection(payload.playerId, false);
   });
 
   socket.on('PLAYER_RECONNECTED', (payload: PlayerReconnectedPayload) => {
-    playersStore.updateStatus(payload.playerId, 'ACTIVE');
+    playersStore.updateStatus(payload.playerId, payload.status);
     playersStore.updateConnection(payload.playerId, true);
+  });
+
+  socket.on('LOBBY_STATE_UPDATED', (payload: LobbyStateUpdatedPayload) => {
+    gameStore.setHostId(payload.hostId);
+    playersStore.hydrate(payload.players);
   });
 
   socket.on('GAME_PAUSED', (payload: GamePausedPayload) => {
     gameStore.setStatus('PAUSED');
-    gameStore.setPausedInfo(payload.disconnectedPlayerId, payload.reconnectWindowSeconds);
+    gameStore.setPausedInfo(payload.disconnectedPlayerId, payload.reconnectDeadlineAt);
 
     const player = playersStore.players[payload.disconnectedPlayerId];
     const name = player?.nickname ?? payload.disconnectedPlayerId;
-    eventLogStore.push('warn', `游戏暂停：${name} 断线，等待重连（${payload.reconnectWindowSeconds} 秒）`);
+    eventLogStore.push('warn', `Game paused: ${name} disconnected. Waiting ${payload.reconnectWindowSeconds} seconds for reconnection`);
   });
 
   socket.on('GAME_RESUMED', (payload: GameResumedPayload) => {
@@ -574,28 +741,33 @@ export const registerSocketListeners = (socket: Socket): void => {
     gameStore.setCurrentTurnPlayerId(payload.currentTurnPlayerId);
     gameStore.setCurrentPhase(payload.currentTurnPhase);
     gameStore.clearPausedInfo();
-    eventLogStore.push('info', '游戏继续');
+    eventLogStore.push('info', 'Game resumed');
   });
 
   socket.on('CASH_UPDATED', (payload: CashUpdatedPayload) => {
     selfStore.setCash(payload.newBalance);
+    if (payload.delta !== 0) {
+      floatingTextStore.showGlobal(`${payload.delta > 0 ? '+' : '-'}$${Math.abs(payload.delta)}`);
+    }
   });
 
   socket.on('RECONNECT_SUCCESS', (payload: ReconnectSuccessPayload) => {
     selfStore.hydrate(payload.selfView);
     gameStore.hydrate(payload.gameSnapshot);
+    gameStore.setTradeDetails(payload.tradeDetails);
+    gameStore.setSelfRescueDetail(payload.rescueDetail);
     playersStore.hydrate(payload.gameSnapshot.players);
   });
 
   socket.on('AUCTION_BID_REJECTED', (payload: AuctionBidRejectedPayload) => {
     const reasonLabels: Record<string, string> = {
-      INSUFFICIENT_FUNDS: '余额不足',
-      BID_NOT_HIGHER: '出价未超过当前最高价',
-      AUCTION_CLOSED: '拍卖已结束',
+      INSUFFICIENT_FUNDS: 'insufficient funds',
+      BID_NOT_HIGHER: 'bid does not exceed the current bid',
+      AUCTION_CLOSED: 'auction has ended',
     };
     const reason = reasonLabels[payload.reason] ?? payload.reason;
-    const suffix = payload.currentBid != null ? `（当前最高 $${payload.currentBid}）` : '';
-    eventLogStore.push('error', `出价被拒绝：${reason}${suffix}`);
+    const suffix = payload.currentBid != null ? ` (current bid: $${payload.currentBid})` : '';
+    eventLogStore.push('error', `Bid rejected: ${reason}${suffix}`);
   });
 
   socket.on('ACTION_REJECTED', (payload: ActionRejectedPayload) => {
@@ -613,15 +785,15 @@ export const registerSocketListeners = (socket: Socket): void => {
 
       return;
     }
-    eventLogStore.push('error', `操作被拒绝 [${payload.code}]: ${payload.reason}`);
+    eventLogStore.push('error', `Action rejected [${payload.code}]: ${payload.reason}`);
   });
 
   socket.on('OPERATION_BLOCKED', (payload: OperationBlockedPayload) => {
-    eventLogStore.push('error', `操作被锁定：竞拍锁定中（锁定金额 $${payload.lockedAmount}）`);
+    eventLogStore.push('error', `Action blocked: $${payload.lockedAmount} is locked in the auction`);
   });
 
   socket.on('TRADE_DETAIL', (payload: TradeDetailPayload) => {
-    gameStore.setActiveTradeDetail(payload);
+    gameStore.setTradeDetail(payload);
   });
 
   socket.on('AUDIT_RESULT', (payload: AuditResultPayload) => {
@@ -631,7 +803,7 @@ export const registerSocketListeners = (socket: Socket): void => {
         const name = player?.nickname ?? playerId;
         return `${name}: $${cash}`;
       })
-      .join('，');
-    eventLogStore.push('info', `验资结果 — ${entries}`);
+      .join(', ');
+    eventLogStore.push('info', `Audit result — ${entries}`);
   });
 };

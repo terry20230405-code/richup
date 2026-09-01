@@ -16,7 +16,6 @@ export enum TurnPhase {
   MOVING              = 'MOVING',
   EVENT_TRIGGER       = 'EVENT_TRIGGER',
   AUCTION_IN_PROGRESS = 'AUCTION_IN_PROGRESS',
-  BUILD_PHASE         = 'BUILD_PHASE',
   JAIL_DECISION       = 'JAIL_DECISION',
   DYING_RESCUE        = 'DYING_RESCUE',
   END_TURN_PENDING    = 'END_TURN_PENDING',
@@ -76,12 +75,13 @@ export interface GameConfig {
   startingBid: Money;             // Always 0 per PRD
 
   // Dying rescue
-  dyingRescueTotalMs: number;     // Max window to self-rescue (PRD = 10 min)
-  dyingRescueAfkWarningMs: number; // AFK warning sent at this point before kick (PRD = 2 min before)
-  dyingRescueAfkKickMs: number;   // AFK kick threshold (PRD = 10 min total)
+  dyingRescueTotalMs: number;     // Max window to self-rescue (8 min)
+  dyingRescueAfkWarningMs: number; // Warning point (6 min, leaving 2 min)
+  dyingRescueAfkKickMs: number;   // Rescue timeout (8 min total)
 
   // Disconnect
-  reconnectWindowMs: number;      // How long to wait before whale-fall (PRD = 5 min)
+  lobbyReconnectWindowMs: number; // How long a lobby seat is reserved after disconnect
+  reconnectWindowMs: number;      // How long to wait before whale-fall (3 min)
 
   // Casino
   casinoBetMultiple: Money;       // Bets must be multiples of this (PRD = 50)
@@ -89,6 +89,7 @@ export interface GameConfig {
   // Temple
   templeLitThreshold: number;     // Number of prayers to light (PRD = 3)
   templePrayFee: Money;           // Cost per prayer
+  templePassThruToll: Money;      // Cost for a non-owner landing on a temple
 
   // Price Hike card
   priceHikeMultiplier: number;    // Rent multiplier while active (PRD = 1.5)
@@ -143,6 +144,8 @@ export interface GameSession {
 
   // Current move context
   lastDiceRoll: { die1: number; die2: number; isDouble: boolean; total: number } | null;
+  pendingExtraRoll: boolean;      // Set by doubles/RAMPAGE until the landing event is resolved
+  remoteDiceOverride: { playerId: PlayerId; steps: 5 | 6 | 7 } | null;
   pendingTileEvent: PendingTileEvent | null;
 
   // Sub-systems

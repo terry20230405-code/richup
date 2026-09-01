@@ -155,9 +155,20 @@ const pendingCount = computed(
   () => gameStore.pendingTrades.filter((t) => t.status === 'PENDING').length,
 );
 
-const otherActivePlayers = computed(() =>
-  playersStore.playerList.filter((p) => p.id !== selfStore.id && p.status === 'ACTIVE'),
-);
+const otherActivePlayers = computed(() => {
+  if (gameStore.currentPhase !== 'DYING_RESCUE') {
+    return playersStore.playerList.filter((p) => p.id !== selfStore.id && p.status === 'ACTIVE');
+  }
+
+  const dyingPlayerId = gameStore.dyingPlayerId;
+  if (!dyingPlayerId) return [];
+  if (selfStore.id === dyingPlayerId) {
+    return playersStore.playerList.filter((p) => p.id !== selfStore.id && p.status === 'ACTIVE');
+  }
+
+  const dyingPlayer = playersStore.players[dyingPlayerId];
+  return dyingPlayer ? [dyingPlayer] : [];
+});
 
 const selfOwnedTiles = computed(() => gameStore.board.filter((t) => t.ownerId === selfStore.id));
 
@@ -187,9 +198,7 @@ const playerName = (id: string): string =>
 const tileName = (id: TileId): string =>
   gameStore.boardById[id]?.name ?? `Tile ${id}`;
 
-const detailFor = (tradeId: string) => (
-  gameStore.activeTradeDetail?.tradeId === tradeId ? gameStore.activeTradeDetail : null
-);
+const detailFor = (tradeId: string) => gameStore.tradeDetails[tradeId] ?? null;
 
 const selectResponder = (playerId: string): void => {
   proposalResponderId.value = playerId;

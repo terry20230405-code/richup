@@ -12,9 +12,10 @@ export enum TradeStatus {
 export enum TradeVoidReason {
   PLAYER_ROLLED        = 'PLAYER_ROLLED',
   PLAYER_JAILED        = 'PLAYER_JAILED',
-  PLAYER_DYING         = 'PLAYER_DYING',      // Only outgoing trades from dying player
+  PLAYER_DYING         = 'PLAYER_DYING',
   PLAYER_BANKRUPT      = 'PLAYER_BANKRUPT',
   PLAYER_DISCONNECTED  = 'PLAYER_DISCONNECTED',
+  GAME_ENDED           = 'GAME_ENDED',
 }
 
 /**

@@ -13,7 +13,6 @@ export declare enum TurnPhase {
     MOVING = "MOVING",
     EVENT_TRIGGER = "EVENT_TRIGGER",
     AUCTION_IN_PROGRESS = "AUCTION_IN_PROGRESS",
-    BUILD_PHASE = "BUILD_PHASE",
     JAIL_DECISION = "JAIL_DECISION",
     DYING_RESCUE = "DYING_RESCUE",
     END_TURN_PENDING = "END_TURN_PENDING",
@@ -59,16 +58,19 @@ export interface GameConfig {
     dyingRescueTotalMs: number;
     dyingRescueAfkWarningMs: number;
     dyingRescueAfkKickMs: number;
+    lobbyReconnectWindowMs: number;
     reconnectWindowMs: number;
     casinoBetMultiple: Money;
     templeLitThreshold: number;
     templePrayFee: Money;
+    templePassThruToll: Money;
     priceHikeMultiplier: number;
 }
 /** Context for the current tile event awaiting a player decision */
 export interface PendingTileEvent {
     tileId: TileId;
     availableActions: string[];
+    taxAmount?: number;
 }
 /** Context for a pending bankruptcy resolution */
 export interface PendingBankruptcy {
@@ -100,6 +102,11 @@ export interface GameSession {
         die2: number;
         isDouble: boolean;
         total: number;
+    } | null;
+    pendingExtraRoll: boolean;
+    remoteDiceOverride: {
+        playerId: PlayerId;
+        steps: 5 | 6 | 7;
     } | null;
     pendingTileEvent: PendingTileEvent | null;
     activeAuction: AuctionSession | null;

@@ -1,6 +1,12 @@
 import { io } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 
-import type { ReconnectActionPayload, SocketSessionAuth } from '@/types/socket';
+import type {
+  ClientToServerEvents,
+  ReconnectActionPayload,
+  ServerToClientEvents,
+  SocketSessionAuth,
+} from '@/types/socket';
 
 import { registerSocketListeners } from './listeners';
 import { readStoredSocketSession } from './storage';
@@ -12,7 +18,7 @@ export const gameSocket = io(SOCKET_URL, {
   autoConnect: false,
   reconnection: false,
   auth: {},
-});
+}) as Socket<ServerToClientEvents, ClientToServerEvents>;
 
 let lifecycleBound = false;
 let eventListenersBound = false;

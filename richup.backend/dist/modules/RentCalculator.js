@@ -43,7 +43,7 @@ function computeRent(session, tileId, landingPlayerId) {
         case Tile_types_1.TileType.AIRPORT:
             return computeAirportRent(session, tile, owner);
         case Tile_types_1.TileType.TEMPLE:
-            return computeTemplePassRent(tile, owner);
+            return computeTemplePassRent(session, tile, owner);
         default:
             return { amount: 0, recipient: Common_types_1.BANK_ID };
     }
@@ -57,11 +57,11 @@ function computePropertyRent(session, tile, owner, _landingPlayerId) {
     // Get base rent
     let baseRent;
     if (tile.buildingLevel > 0) {
-        baseRent = tile.rentByLevel[tile.buildingLevel - 1] ?? 0;
+        baseRent = tile.rentByLevel[tile.buildingLevel] ?? 0;
     }
     else {
         // Check for monopoly
-        const ownerOwnsAll = groupTiles.every(t => t.ownerId === owner.id);
+        const ownerOwnsAll = groupTiles.every(t => t.ownerId === owner.id && !t.isMortgaged);
         baseRent = ownerOwnsAll ? tile.baseRentWithMonopoly : tile.baseRent;
     }
     // Cascading penalty: ratio of unmortgaged tiles in group owner has
@@ -95,11 +95,11 @@ function computeAirportRent(session, tile, owner) {
     return { amount: rent, recipient };
 }
 // ─── Temple pass-through rent ─────────────────────────────────────────────────
-function computeTemplePassRent(tile, owner) {
+function computeTemplePassRent(session, tile, owner) {
     if (tile.isMortgaged)
         return { amount: 0, recipient: Common_types_1.BANK_ID };
     const recipient = owner.inJail ? Common_types_1.BANK_ID : owner.id;
-    return { amount: tile.passThruToll, recipient };
+    return { amount: session.config.templePassThruToll, recipient };
 }
 // ─── Group helpers ────────────────────────────────────────────────────────────
 /**
@@ -107,7 +107,7 @@ function computeTemplePassRent(tile, owner) {
  */
 function hasMonopoly(session, playerId, colorGroup) {
     const groupTiles = session.board.filter((t) => t.type === Tile_types_1.TileType.PROPERTY && t.colorGroup === colorGroup);
-    return groupTiles.length > 0 && groupTiles.every(t => t.ownerId === playerId);
+    return groupTiles.length > 0 && groupTiles.every(t => t.ownerId === playerId && !t.isMortgaged);
 }
 /**
  * Check that buildings are placed "evenly" across a colour group:

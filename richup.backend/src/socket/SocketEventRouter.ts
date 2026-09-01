@@ -14,10 +14,11 @@ import type { PlayerId, Money, TileId } from '../types/Common.types';
 import { TurnPhase, GameStatus } from '../types/GameSession.types';
 import { BankruptcyType } from '../types/GameSession.types';
 import { PlayerStatus } from '../types/Player.types';
-import type { S2C_ActionRejected, S2C_TurnStarted, S2C_TurnEnded, S2C_MapGenerated, S2C_GamePaused, S2C_GameResumed, S2C_PlayerDisconnected, S2C_PlayerReconnected, S2C_ReconnectSuccess } from '../types/Events.types';
+import type { S2C_ActionRejected, S2C_TurnEnded, S2C_MapGenerated, S2C_GameResumed, S2C_PlayerReconnected, S2C_ReconnectSuccess } from '../types/Events.types';
 import { PropCardType } from '../types/PropCard.types';
 import {
   getSocketContext,
+  hasConnectedSocket,
   registerSocket,
   unregisterSocket,
   getSession,
@@ -27,30 +28,29 @@ import {
   startGame,
   requirePlayer,
   getCurrentPlayerId,
-  getActivePlayers,
-  advanceTurn,
-  checkVictory,
 } from '../state/GameSession';
 import { StateMachine } from '../state/StateMachine';
-import { buildReconnectSnapshot, serializeBoard, toPublicView } from '../serialization/GameStateSerializer';
-import { performRoll as _performRoll, rollForJailDouble as _rollForJailDouble, resetDoublesTracker } from '../modules/DiceEngine';
-import { movePlayer as _movePlayer, getPlayerTile, needsTileEvent } from '../modules/MovementEngine';
+import { buildReconnectSnapshot, serializeBoard } from '../serialization/GameStateSerializer';
+import { performRoll, rollForJailDouble, resetDoublesTracker } from '../modules/DiceEngine';
+import { movePlayer, getPlayerTile, needsTileEvent } from '../modules/MovementEngine';
 import { computeRent } from '../modules/RentCalculator';
 import { applySurpriseCard } from '../modules/SurpriseHandler';
 import { sendToJail, payBail, resolveJailRoll } from '../modules/JailManager';
 import { startAuction, placeBid, passAuction } from '../modules/AuctionManager';
 import { buildHouse, buildHotel, sellBuilding, mortgageProperty, unmortgageProperty } from '../modules/BuildingManager';
-import { enterDyingRescue, declareBankruptcy, triggerWhaleFall, refreshDyingRescueActivity } from '../modules/BankruptcyResolver';
-import { proposeTrade, acceptTrade, rejectTrade, cancelTrade, voidOutgoingTrades } from '../modules/TradeManager';
+import { enterDyingRescue, declareBankruptcy, refreshDyingRescueActivity, rescueDyingPlayer } from '../modules/BankruptcyResolver';
+import { broadcastLobbyState, handleLastSocketDisconnect } from '../modules/ConnectionLifecycle';
+import { proposeTrade, acceptTrade, rejectTrade, cancelTrade, voidTradesInvolvingPlayer } from '../modules/TradeManager';
 import { usePropCard } from '../modules/PropCardHandler';
 import { ownerPrays, handleTempleLanding } from '../modules/TempleManager';
 import { handleCasinoBet } from '../modules/CasinoManager';
+import { resolveAfterLanding, advanceToNextTurn, emitTurnStarted } from '../modules/TurnFlow';
 import { broadcastToRoom } from './emitters/broadcast';
-import { emitToPlayer, playerRoom } from './emitters/direct';
+import { emitToPlayer, emitToSocket, playerRoom } from './emitters/direct';
 import { phaseGuard } from './guards/phaseGuard';
 import { playerTurnGuard } from './guards/playerTurnGuard';
 import { validateInput } from './guards/inputValidator';
-import { cancelAllTimers, scheduleTimer, TimerNS } from '../utils/timerUtils';
+import { cancelTimer, TimerNS } from '../utils/timerUtils';
 import { TradeVoidReason } from '../types/Trade.types';
 import { TileType } from '../types/Tile.types';
 import type { PropertyTile } from '../types/Tile.types';
@@ -59,9 +59,6 @@ import { cashChange } from '../state/GameSession';
 import { BANK_ID } from '../types/Common.types';
 import { DomainError } from '../utils/errors';
 import { logger } from '../utils/logger';
-
-const _DiceEngine = { performRoll: _performRoll, rollForJailDouble: _rollForJailDouble };
-const _MovementEngine = { movePlayer: _movePlayer };
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -94,7 +91,7 @@ function rejectAction(socket: Socket, action: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : 'Unknown error';
   const code = err instanceof DomainError ? domainErrorCode(err) : 'RULE_VIOLATION';
   const payload: S2C_ActionRejected = { action, reason: msg, code };
-  socket.emit('ACTION_REJECTED', payload);
+  emitToSocket(socket, 'ACTION_REJECTED', payload);
   logger.debug({ action, reason: msg }, 'Action rejected');
 }
 
@@ -128,11 +125,11 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (session.hostId !== playerId) {
-      socket.emit('ACTION_REJECTED', { action: 'START_GAME', reason: 'Only the host can start', code: 'RULE_VIOLATION' });
+      emitToSocket(socket, 'ACTION_REJECTED', { action: 'START_GAME', reason: 'Only the host can start', code: 'RULE_VIOLATION' });
       return;
     }
     if (session.status !== GameStatus.LOBBY) {
-      socket.emit('ACTION_REJECTED', { action: 'START_GAME', reason: 'Already started', code: 'WRONG_PHASE' });
+      emitToSocket(socket, 'ACTION_REJECTED', { action: 'START_GAME', reason: 'Already started', code: 'WRONG_PHASE' });
       return;
     }
 
@@ -142,6 +139,14 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
       const board = serializeBoard(session);
       const mapPayload: S2C_MapGenerated = { board, playerOrder: session.playerOrder };
       broadcastToRoom(io, session.id, 'MAP_GENERATED', mapPayload);
+
+      // Existing sockets (especially the host) may have joined before the
+      // final player roster was complete. Refresh each private snapshot before
+      // the first turn so every client has the same player identities/state.
+      for (const player of session.players.values()) {
+        if (!player.isConnected) continue;
+        emitToPlayer(io, player.id, 'RECONNECT_SUCCESS', buildReconnectSnapshot(session, player.id));
+      }
 
       emitTurnStarted(io, session);
     } catch (err) {
@@ -168,31 +173,29 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     try {
       if (player.inJail) {
         StateMachine.transition(session, TurnPhase.ROLLING_DICE);
-        const result = _DiceEngine.rollForJailDouble(session, playerId, io);
+        const result = rollForJailDouble(session, playerId, io);
         const released = resolveJailRoll(session, playerId, result.isDouble, io);
         if (released) {
           StateMachine.transition(session, TurnPhase.MOVING);
-          const moveResult = _MovementEngine.movePlayer(session, playerId, result.total, io);
-          handleLanding(session, playerId, moveResult.newPosition, io, socket);
+          const moveResult = movePlayer(session, playerId, result.total, io);
+          handleLanding(session, playerId, moveResult.newPosition, io);
         } else {
-          StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+          resolveAfterLanding(session, playerId, io);
         }
       } else {
         StateMachine.transition(session, TurnPhase.ROLLING_DICE);
-        const result = _DiceEngine.performRoll(session, playerId, io);
+        const result = performRoll(session, playerId, io);
+        session.pendingExtraRoll = result.isDouble;
 
         if (result.jailTriggered) {
+          session.pendingExtraRoll = false;
           sendToJail(session, playerId, io);
-          StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+          resolveAfterLanding(session, playerId, io);
         } else {
           StateMachine.transition(session, TurnPhase.MOVING);
-          const moveResult = _MovementEngine.movePlayer(session, playerId, result.total, io);
-          handleLanding(session, playerId, moveResult.newPosition, io, socket);
+          const moveResult = movePlayer(session, playerId, result.total, io);
+          handleLanding(session, playerId, moveResult.newPosition, io);
 
-          // Doubles: allow another roll (stay in WAITING_FOR_ACTION) unless game handled it
-          if (result.isDouble && session.currentPhase === TurnPhase.END_TURN_PENDING) {
-            // Doubles after landing: stay in END_TURN so player still ends turn
-          }
         }
       }
     } catch (err) {
@@ -213,25 +216,9 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
       const endPayload: S2C_TurnEnded = { playerId };
       broadcastToRoom(io, session.id, 'TURN_ENDED', endPayload);
 
-      // Check price-hike card expiry
-      const player = requirePlayer(session, playerId);
-      if (player.priceHikeActive && player.priceHikeExpiresOnTurn !== null
-          && session.turnNumber >= player.priceHikeExpiresOnTurn) {
-        player.priceHikeActive = false;
-        player.priceHikeExpiresOnTurn = null;
-        broadcastToRoom(io, session.id, 'PRICE_HIKE_EXPIRED', { playerId });
-      }
-
       resetDoublesTracker(session.id, playerId);
 
-      StateMachine.transition(session, TurnPhase.TURN_TRANSITIONING);
-      advanceTurn(session);
-
-      const nextPlayer = session.players.get(getCurrentPlayerId(session))!;
-      const nextPhase = nextPlayer.inJail ? TurnPhase.JAIL_DECISION : TurnPhase.WAITING_FOR_ACTION;
-      StateMachine.transition(session, nextPhase);
-
-      emitTurnStarted(io, session);
+      advanceToNextTurn(session, io);
     } catch (err) {
       rejectAction(socket, 'END_TURN', err);
     }
@@ -247,6 +234,9 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!playerTurnGuard(socket, session, playerId, 'BUY_PROPERTY')) return;
 
     try {
+      if (!session.pendingTileEvent?.availableActions.includes('BUY_PROPERTY')) {
+        throw new Error('No pending property purchase');
+      }
       const tile = getPlayerTile(session, playerId);
       if (!('basePrice' in tile) || !('ownerId' in tile)) {
         throw new Error('Current tile is not purchasable');
@@ -267,7 +257,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
         price,
       });
 
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      resolveAfterLanding(session, playerId, io);
     } catch (err) {
       rejectAction(socket, 'BUY_PROPERTY', err);
     }
@@ -283,6 +273,9 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!playerTurnGuard(socket, session, playerId, 'CHOOSE_AUCTION')) return;
 
     try {
+      if (!session.pendingTileEvent?.availableActions.includes('CHOOSE_AUCTION')) {
+        throw new Error('No pending auction choice');
+      }
       const tile = getPlayerTile(session, playerId);
       startAuction(session, tile.id, io);
     } catch (err) {
@@ -300,7 +293,10 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!playerTurnGuard(socket, session, playerId, 'SKIP_PURCHASE')) return;
 
     try {
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      if (!session.pendingTileEvent?.availableActions.includes('SKIP_PURCHASE')) {
+        throw new Error('This tile cannot be skipped');
+      }
+      resolveAfterLanding(session, playerId, io);
     } catch (err) {
       rejectAction(socket, 'SKIP_PURCHASE', err);
     }
@@ -345,6 +341,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (!phaseGuard(socket, session, [TurnPhase.WAITING_FOR_ACTION, TurnPhase.END_TURN_PENDING], 'BUILD_HOUSE')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'BUILD_HOUSE')) return;
     const validated = validateInput(socket, BuildSchema, data, 'BUILD_HOUSE');
     if (!validated) return;
 
@@ -362,6 +359,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (!phaseGuard(socket, session, [TurnPhase.WAITING_FOR_ACTION, TurnPhase.END_TURN_PENDING], 'BUILD_HOTEL')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'BUILD_HOTEL')) return;
     const validated = validateInput(socket, BuildSchema, data, 'BUILD_HOTEL');
     if (!validated) return;
 
@@ -379,6 +377,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (!phaseGuard(socket, session, [TurnPhase.WAITING_FOR_ACTION, TurnPhase.DYING_RESCUE, TurnPhase.END_TURN_PENDING], 'SELL_BUILDING')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'SELL_BUILDING')) return;
     const validated = validateInput(socket, BuildSchema, data, 'SELL_BUILDING');
     if (!validated) return;
 
@@ -387,6 +386,9 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
         refreshDyingRescueActivity(session, playerId);
       }
       sellBuilding(session, playerId, validated.tileId as TileId, io);
+      if (session.currentPhase === TurnPhase.DYING_RESCUE && rescueDyingPlayer(session, playerId, io)) {
+        advanceToNextTurn(session, io);
+      }
     } catch (err) {
       rejectAction(socket, 'SELL_BUILDING', err);
     }
@@ -399,6 +401,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (!phaseGuard(socket, session, [TurnPhase.WAITING_FOR_ACTION, TurnPhase.DYING_RESCUE, TurnPhase.END_TURN_PENDING], 'MORTGAGE')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'MORTGAGE')) return;
     const validated = validateInput(socket, BuildSchema, data, 'MORTGAGE');
     if (!validated) return;
 
@@ -407,6 +410,9 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
         refreshDyingRescueActivity(session, playerId);
       }
       mortgageProperty(session, playerId, validated.tileId as TileId, io);
+      if (session.currentPhase === TurnPhase.DYING_RESCUE && rescueDyingPlayer(session, playerId, io)) {
+        advanceToNextTurn(session, io);
+      }
     } catch (err) {
       rejectAction(socket, 'MORTGAGE', err);
     }
@@ -419,6 +425,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (!phaseGuard(socket, session, [TurnPhase.WAITING_FOR_ACTION, TurnPhase.END_TURN_PENDING], 'UNMORTGAGE')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'UNMORTGAGE')) return;
     const validated = validateInput(socket, BuildSchema, data, 'UNMORTGAGE');
     if (!validated) return;
 
@@ -439,9 +446,6 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!validated) return;
 
     try {
-      if (session.currentPhase === TurnPhase.DYING_RESCUE) {
-        refreshDyingRescueActivity(session, playerId);
-      }
       proposeTrade(
         session, playerId, validated.responderId,
         { cash: validated.proposerOffer.cash ?? 0, tileIds: validated.proposerOffer.tileIds, propCardIds: validated.proposerOffer.propCardIds ?? [] },
@@ -463,9 +467,6 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!validated) return;
 
     try {
-      if (session.currentPhase === TurnPhase.DYING_RESCUE) {
-        refreshDyingRescueActivity(session, playerId);
-      }
       acceptTrade(session, validated.tradeId, playerId, io);
     } catch (err) {
       rejectAction(socket, 'ACCEPT_TRADE', err);
@@ -515,6 +516,11 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
 
     try {
       payBail(session, playerId, io);
+      broadcastToRoom(io, session.id, 'TURN_READY', {
+        playerId,
+        phase: TurnPhase.WAITING_FOR_ACTION,
+        availableActions: ['ROLL_DICE'],
+      });
     } catch (err) {
       rejectAction(socket, 'PAY_BAIL', err);
     }
@@ -531,7 +537,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
 
     const taxAmount = session.pendingTileEvent?.taxAmount as Money | undefined;
     if (!taxAmount) {
-      socket.emit('ACTION_REJECTED', { action: 'PAY_TAX', reason: 'No pending tax amount', code: 'RULE_VIOLATION' });
+      emitToSocket(socket, 'ACTION_REJECTED', { action: 'PAY_TAX', reason: 'No pending tax amount', code: 'RULE_VIOLATION' });
       return;
     }
 
@@ -541,10 +547,10 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (player.cash >= taxAmount) {
       cashChange(session, playerId, -taxAmount, 'TAX', io);
       broadcastToRoom(io, session.id, 'TAX_PAID', { playerId, amount: taxAmount });
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      resolveAfterLanding(session, playerId, io);
     } else {
       enterDyingRescue(session, playerId, BankruptcyType.TYPE_A, null, taxAmount, io);
-      voidOutgoingTrades(session, playerId, TradeVoidReason.PLAYER_DYING, io);
+      voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_DYING, io);
     }
   });
 
@@ -560,14 +566,14 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     // Handled by ROLL_DICE when inJail — kept here for explicit event support
     try {
       StateMachine.transition(session, TurnPhase.ROLLING_DICE);
-      const result = _DiceEngine.rollForJailDouble(session, playerId, io);
+      const result = rollForJailDouble(session, playerId, io);
       const released = resolveJailRoll(session, playerId, result.isDouble, io);
       if (released) {
         StateMachine.transition(session, TurnPhase.MOVING);
-        const moveResult = _MovementEngine.movePlayer(session, playerId, result.total, io);
-        handleLanding(session, playerId, moveResult.newPosition, io, socket);
+        const moveResult = movePlayer(session, playerId, result.total, io);
+        handleLanding(session, playerId, moveResult.newPosition, io);
       } else {
-        StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+        resolveAfterLanding(session, playerId, io);
       }
     } catch (err) {
       rejectAction(socket, 'ROLL_FOR_DOUBLE', err);
@@ -581,8 +587,17 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     const { session, playerId } = ctx;
 
     if (!phaseGuard(socket, session, [TurnPhase.WAITING_FOR_ACTION, TurnPhase.END_TURN_PENDING], 'USE_PROP_CARD')) return;
+    if (!playerTurnGuard(socket, session, playerId, 'USE_PROP_CARD')) return;
     const validated = validateInput(socket, UsePropCardSchema, data, 'USE_PROP_CARD');
     if (!validated) return;
+    if (validated.cardType === PropCardType.REMOTE_DICE && session.currentPhase !== TurnPhase.WAITING_FOR_ACTION) {
+      emitToSocket(socket, 'ACTION_REJECTED', {
+        action: 'USE_PROP_CARD',
+        reason: 'REMOTE_DICE must be used before the next roll',
+        code: 'WRONG_PHASE',
+      });
+      return;
+    }
 
     try {
       usePropCard(session, playerId, validated.cardId, validated.cardType, {
@@ -605,9 +620,12 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!playerTurnGuard(socket, session, playerId, 'TEMPLE_PRAY')) return;
 
     try {
+      if (!session.pendingTileEvent?.availableActions.includes('TEMPLE_PRAY')) {
+        throw new Error('No pending temple prayer');
+      }
       const tile = getPlayerTile(session, playerId);
       ownerPrays(session, playerId, tile.id, io);
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      resolveAfterLanding(session, playerId, io);
     } catch (err) {
       rejectAction(socket, 'TEMPLE_PRAY', err);
     }
@@ -626,8 +644,11 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!validated) return;
 
     try {
-      handleCasinoBet(session, playerId, validated.amount as Money, io);
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      const tileId = session.pendingTileEvent?.tileId;
+      if (tileId === undefined) throw new Error('No pending casino event');
+      handleCasinoBet(session, playerId, tileId, validated.amount as Money, io);
+      session.pendingTileEvent = null;
+      resolveAfterLanding(session, playerId, io);
     } catch (err) {
       rejectAction(socket, 'CASINO_BET', err);
     }
@@ -641,7 +662,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
 
     if (!phaseGuard(socket, session, [TurnPhase.DYING_RESCUE], 'DECLARE_BANKRUPTCY')) return;
     if (session.dyingRescue?.playerId !== playerId) {
-      socket.emit('ACTION_REJECTED', { action: 'DECLARE_BANKRUPTCY', reason: 'You are not in dying rescue', code: 'RULE_VIOLATION' });
+      emitToSocket(socket, 'ACTION_REJECTED', { action: 'DECLARE_BANKRUPTCY', reason: 'You are not in dying rescue', code: 'RULE_VIOLATION' });
       return;
     }
 
@@ -653,7 +674,7 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
   });
 
   // ── action:RECONNECT ──────────────────────────────────────────────────────
-  socket.on('action:RECONNECT', (data: unknown) => {
+  socket.on('action:RECONNECT', async (data: unknown) => {
     const validated = validateInput(socket, ReconnectSchema, data, 'RECONNECT');
     if (!validated) return;
 
@@ -661,14 +682,25 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
       const payload = verifyToken(validated.sessionToken);
       const session = getSession(payload.roomId);
       if (!session) {
-        socket.emit('ACTION_REJECTED', { action: 'RECONNECT', reason: 'Room not found', code: 'RULE_VIOLATION' });
+        emitToSocket(socket, 'ACTION_REJECTED', { action: 'RECONNECT', reason: 'Room not found', code: 'RULE_VIOLATION' });
         return;
       }
 
       const player = session.players.get(payload.playerId);
       if (!player) {
-        socket.emit('ACTION_REJECTED', { action: 'RECONNECT', reason: 'Player not found', code: 'RULE_VIOLATION' });
+        emitToSocket(socket, 'ACTION_REJECTED', { action: 'RECONNECT', reason: 'Player not found', code: 'RULE_VIOLATION' });
         return;
+      }
+
+      // A socket may authenticate again with another token. Remove its old room
+      // subscriptions before replacing the registry entry.
+      const previousContext = getSocketContext(socket.id);
+      if (previousContext && (
+        previousContext.roomId !== payload.roomId ||
+        previousContext.playerId !== payload.playerId
+      )) {
+        await socket.leave(previousContext.roomId);
+        await socket.leave(playerRoom(previousContext.playerId));
       }
 
       // Register new socket
@@ -676,8 +708,10 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
       socket.join(payload.roomId);
       socket.join(playerRoom(payload.playerId));
 
-      // Cancel reconnect timer
-      cancelAllTimers(`${session.id}:${payload.playerId}:reconnect`);
+      // Cancel only connection timers. Rescue/auction timers use independent
+      // namespaces and must not be affected by a network reconnection.
+      cancelTimer(TimerNS.lobbyReconnect(session.id, payload.playerId));
+      cancelTimer(TimerNS.reconnect(session.id, payload.playerId));
 
       // Update player state
       player.isConnected = true;
@@ -698,12 +732,18 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
         broadcastToRoom(io, session.id, 'GAME_RESUMED', resumePayload);
       }
 
-      const reconnectedPayload: S2C_PlayerReconnected = { playerId: payload.playerId };
+      const reconnectedPayload: S2C_PlayerReconnected = {
+        playerId: payload.playerId,
+        status: player.status,
+      };
       broadcastToRoom(io, session.id, 'PLAYER_RECONNECTED', reconnectedPayload);
+      if (session.status === GameStatus.LOBBY) {
+        broadcastLobbyState(session, io);
+      }
 
       const snapshot = buildReconnectSnapshot(session, payload.playerId);
       const successPayload: S2C_ReconnectSuccess = snapshot;
-      socket.emit('RECONNECT_SUCCESS', successPayload);
+      emitToSocket(socket, 'RECONNECT_SUCCESS', successPayload);
 
       logger.info({ roomId: payload.roomId, playerId: payload.playerId }, 'Player reconnected');
     } catch (err) {
@@ -717,63 +757,12 @@ export function registerSocketEvents(io: Server, socket: Socket): void {
     if (!entry) return;
 
     const { playerId, roomId } = entry;
+    if (hasConnectedSocket(roomId, playerId)) return;
+
     const session = getSession(roomId);
-    if (!session || session.status !== GameStatus.IN_PROGRESS) return;
+    if (!session) return;
 
-    const player = session.players.get(playerId);
-    if (!player) return;
-
-    player.isConnected = false;
-    player.lastSeenAt = Date.now();
-    player.status = PlayerStatus.DISCONNECTED;
-
-    const isCurrentPlayer = getCurrentPlayerId(session) === playerId;
-
-    const disconnectedPayload: S2C_PlayerDisconnected = {
-      playerId,
-      afkWarningMs: session.config.reconnectWindowMs,
-    };
-    broadcastToRoom(io, session.id, 'PLAYER_DISCONNECTED', disconnectedPayload);
-
-    if (isCurrentPlayer) {
-      // Pause game
-      session.status = GameStatus.PAUSED;
-      session.pausedAt = Date.now();
-      session.disconnectedCurrentPlayerId = playerId;
-
-      const pausePayload: S2C_GamePaused = {
-        disconnectedPlayerId: playerId,
-        reconnectWindowSeconds: Math.ceil(session.config.reconnectWindowMs / 1000),
-      };
-      broadcastToRoom(io, session.id, 'GAME_PAUSED', pausePayload);
-
-      // Start whale-fall timer
-      scheduleTimer(
-        TimerNS.reconnect(session.id, playerId),
-        session.config.reconnectWindowMs,
-        () => {
-          if (session.disconnectedCurrentPlayerId === playerId) {
-            triggerWhaleFall(session, playerId, 'DISCONNECT_TIMEOUT', io);
-          }
-        },
-        `Reconnect timer for player ${playerId}`,
-      );
-    } else {
-      // Non-current player disconnected — just start AFK timer, game continues
-      scheduleTimer(
-        TimerNS.reconnect(session.id, playerId),
-        session.config.reconnectWindowMs,
-        () => {
-          const p = session.players.get(playerId);
-          if (p && !p.isConnected) {
-            triggerWhaleFall(session, playerId, 'DISCONNECT_TIMEOUT', io);
-          }
-        },
-        `Reconnect timer for non-current player ${playerId}`,
-      );
-    }
-
-    logger.info({ roomId, playerId, isCurrentPlayer }, 'Player disconnected');
+    handleLastSocketDisconnect(session, playerId, io);
   });
 }
 
@@ -784,12 +773,11 @@ function handleLanding(
   playerId: PlayerId,
   position: number,
   io: Server,
-  socket: Socket,
 ): void {
   const tile = session.board[position]!;
 
   if (!needsTileEvent(tile)) {
-    StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+    resolveAfterLanding(session, playerId, io);
     return;
   }
 
@@ -812,7 +800,7 @@ function handleLanding(
         });
       } else if (tile.ownerId === playerId) {
         // Own property — no event
-        StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+        resolveAfterLanding(session, playerId, io);
       } else {
         // Pay rent
         const rentResult = computeRent(session, tile.id, playerId);
@@ -823,7 +811,7 @@ function handleLanding(
           if (player.hasImmunity) {
             player.hasImmunity = false;
             broadcastToRoom(io, session.id, 'IMMUNITY_USED', { playerId, tileId: tile.id });
-            StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+            resolveAfterLanding(session, playerId, io);
             return;
           }
 
@@ -837,15 +825,17 @@ function handleLanding(
               to: rentResult.recipient,
               tileId: tile.id,
               amount: rentResult.amount,
+              phase: session.pendingExtraRoll ? TurnPhase.WAITING_FOR_ACTION : TurnPhase.END_TURN_PENDING,
+              availableActions: session.pendingExtraRoll ? ['ROLL_DICE'] : ['END_TURN'],
             });
-            StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+            resolveAfterLanding(session, playerId, io);
           } else {
             // Can't pay → enter dying rescue
             enterDyingRescue(session, playerId, BankruptcyType.TYPE_B, rentResult.recipient !== BANK_ID ? rentResult.recipient : null, rentResult.amount, io);
-            voidOutgoingTrades(session, playerId, TradeVoidReason.PLAYER_DYING, io);
+            voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_DYING, io);
           }
         } else {
-          StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+          resolveAfterLanding(session, playerId, io);
         }
       }
       break;
@@ -873,24 +863,36 @@ function handleLanding(
 
     case TileType.SURPRISE: {
       StateMachine.transition(session, TurnPhase.EVENT_TRIGGER);
-      const result = applySurpriseCard(session, playerId, io);
-      if (result.rampage) {
-        // Extra roll: stay in EVENT_TRIGGER then process roll
-        StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      const surpriseResult = applySurpriseCard(session, playerId, io);
+      if (surpriseResult.requiresRescue) {
+        enterDyingRescue(session, playerId, BankruptcyType.TYPE_A, null, surpriseResult.amountOwed, io);
+        voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_DYING, io);
       } else {
-        StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+        session.pendingExtraRoll = session.pendingExtraRoll || surpriseResult.rampage;
+        resolveAfterLanding(session, playerId, io);
       }
       break;
     }
 
     case TileType.JAIL:
       // Just visiting — no effect
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      resolveAfterLanding(session, playerId, io);
       break;
 
     case TileType.TEMPLE: {
       const templeResult = handleTempleLanding(session, playerId, tile.id, io);
-      if (!templeResult.rentCharged && !templeResult.propCardDrawn) {
+      if (templeResult.requiresRescue) {
+        const rentResult = computeRent(session, tile.id, playerId);
+        enterDyingRescue(
+          session,
+          playerId,
+          BankruptcyType.TYPE_B,
+          rentResult.recipient !== BANK_ID ? rentResult.recipient : null,
+          templeResult.amountOwed,
+          io,
+        );
+        voidTradesInvolvingPlayer(session, playerId, TradeVoidReason.PLAYER_DYING, io);
+      } else if (!templeResult.rentCharged && !templeResult.propCardDrawn) {
         const isUnowned = !tile.ownerId;
         const isOwner = tile.ownerId === playerId;
         const availableActions = isUnowned
@@ -908,39 +910,27 @@ function handleLanding(
           availableActions,
         });
       } else {
-        StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+        resolveAfterLanding(session, playerId, io);
       }
       break;
     }
 
     case TileType.CASINO: {
-      session.pendingTileEvent = { tileId: tile.id, availableActions: ['CASINO_BET'] };
+      session.pendingTileEvent = { tileId: tile.id, availableActions: ['CASINO_BET', 'SKIP_PURCHASE'] };
       StateMachine.transition(session, TurnPhase.EVENT_TRIGGER);
       broadcastToRoom(io, session.id, 'TILE_EVENT', {
         playerId,
         tileId: tile.id,
         tileType: tile.type,
         phase: TurnPhase.EVENT_TRIGGER,
-        availableActions: ['CASINO_BET'],
+        availableActions: ['CASINO_BET', 'SKIP_PURCHASE'],
       });
       break;
     }
 
     default:
-      StateMachine.transition(session, TurnPhase.END_TURN_PENDING);
+      resolveAfterLanding(session, playerId, io);
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function emitTurnStarted(io: Server, session: GameSession): void {
-  const currentPlayerId = getCurrentPlayerId(session);
-  const payload: S2C_TurnStarted = {
-    playerId: currentPlayerId,
-    turnNumber: session.turnNumber,
-    phase: session.currentPhase,
-    timeoutMs: 60_000,  // Placeholder; real value per phase
-  };
-  broadcastToRoom(io, session.id, 'TURN_STARTED', payload);
-}
-

@@ -17,5 +17,6 @@ var TradeVoidReason;
     TradeVoidReason["PLAYER_DYING"] = "PLAYER_DYING";
     TradeVoidReason["PLAYER_BANKRUPT"] = "PLAYER_BANKRUPT";
     TradeVoidReason["PLAYER_DISCONNECTED"] = "PLAYER_DISCONNECTED";
+    TradeVoidReason["GAME_ENDED"] = "GAME_ENDED";
 })(TradeVoidReason || (exports.TradeVoidReason = TradeVoidReason = {}));
 //# sourceMappingURL=Trade.types.js.map

@@ -9,15 +9,18 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startGame = startGame;
 exports.cashChange = cashChange;
+exports.syncPropCards = syncPropCards;
 exports.requirePlayer = requirePlayer;
 exports.getCurrentPlayer = getCurrentPlayer;
 exports.getCurrentPlayerId = getCurrentPlayerId;
 exports.getActivePlayers = getActivePlayers;
 exports.advanceTurn = advanceTurn;
 exports.checkVictory = checkVictory;
+exports.getConstructibleTileIds = getConstructibleTileIds;
 exports.getOwnedTileIds = getOwnedTileIds;
 const GameSession_types_1 = require("../types/GameSession.types");
 const Player_types_1 = require("../types/Player.types");
+const Tile_types_1 = require("../types/Tile.types");
 const MapGenerator_1 = require("../modules/MapGenerator");
 const SurpriseHandler_1 = require("../modules/SurpriseHandler");
 const StateMachine_1 = require("./StateMachine");
@@ -25,6 +28,7 @@ const direct_1 = require("../socket/emitters/direct");
 const randomUtils_1 = require("../utils/randomUtils");
 const errors_1 = require("../utils/errors");
 const logger_1 = require("../utils/logger");
+const timerUtils_1 = require("../utils/timerUtils");
 // ─── Start game ──────────────────────────────────────────────────────────────
 /**
  * Transition a LOBBY session to IN_PROGRESS.
@@ -38,6 +42,11 @@ function startGame(session) {
     if (session.players.size < 2) {
         throw new errors_1.RuleViolationError('Need at least 2 players to start');
     }
+    if ([...session.players.values()].some(player => !player.isConnected)) {
+        throw new errors_1.RuleViolationError('All lobby players must be connected');
+    }
+    // No lobby reservation timer may survive into an active match.
+    (0, timerUtils_1.cancelAllTimers)(session.id);
     // Generate board
     session.board = (0, MapGenerator_1.generateBoard)();
     // Randomize player order
@@ -76,6 +85,17 @@ function cashChange(session, playerId, delta, reason, io) {
     logger_1.logger.debug({ roomId: session.id, playerId, delta, newBalance: player.cash, reason }, 'Cash changed');
     return player.cash;
 }
+/**
+ * Send the authoritative prop-card hand to its owner only.
+ * Call this after every successful server-side hand mutation.
+ */
+function syncPropCards(session, playerId, io) {
+    const player = requirePlayer(session, playerId);
+    const payload = {
+        propCards: player.propCards.map(card => ({ ...card })),
+    };
+    (0, direct_1.emitToPlayer)(io, playerId, 'PROP_CARDS_UPDATED', payload);
+}
 // ─── Player queries ───────────────────────────────────────────────────────────
 function requirePlayer(session, playerId) {
     const p = session.players.get(playerId);
@@ -113,11 +133,11 @@ function advanceTurn(session) {
     const prevIndex = session.currentPlayerIndex;
     let next = (prevIndex + 1) % total;
     let looped = 0;
-    // Skip bankrupt players
+    // Skip bankrupt/disconnected players
     while (looped < total) {
         const pid = session.playerOrder[next];
         const p = pid ? session.players.get(pid) : undefined;
-        if (p && p.status !== Player_types_1.PlayerStatus.BANKRUPT)
+        if (p && p.status !== Player_types_1.PlayerStatus.BANKRUPT && p.isConnected)
             break;
         next = (next + 1) % total;
         looped++;
@@ -129,6 +149,8 @@ function advanceTurn(session) {
     session.currentPlayerIndex = next;
     session.turnNumber++;
     session.lastDiceRoll = null;
+    session.pendingExtraRoll = false;
+    session.remoteDiceOverride = null;
     session.pendingTileEvent = null;
 }
 // ─── Victory check ────────────────────────────────────────────────────────────
@@ -142,14 +164,20 @@ function checkVictory(session) {
     return null;
 }
 // ─── Owned tiles helper ───────────────────────────────────────────────────────
-/** Returns all TileIds owned by the given player. */
-function getOwnedTileIds(session, playerId) {
+/** Returns property TileIds that the player can manage during their turn. */
+function getConstructibleTileIds(session, playerId) {
     const owned = [];
     for (const tile of session.board) {
-        if ('ownerId' in tile && tile.ownerId === playerId) {
+        if (tile.type === Tile_types_1.TileType.PROPERTY && tile.ownerId === playerId) {
             owned.push(tile.id);
         }
     }
     return owned;
+}
+/** Returns all ownable TileIds owned by the given player. */
+function getOwnedTileIds(session, playerId) {
+    return session.board
+        .filter((tile) => 'ownerId' in tile && tile.ownerId === playerId)
+        .map(tile => tile.id);
 }
 //# sourceMappingURL=GameSession.js.map

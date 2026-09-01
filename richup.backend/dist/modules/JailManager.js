@@ -19,6 +19,8 @@ const GameSession_types_1 = require("../types/GameSession.types");
 const broadcast_1 = require("../socket/emitters/broadcast");
 const errors_1 = require("../utils/errors");
 const logger_1 = require("../utils/logger");
+const TradeLifecycle_1 = require("./TradeLifecycle");
+const Trade_types_1 = require("../types/Trade.types");
 const JAIL_POSITION = GameConfig_1.BOARD_CONFIG.FIXED_ANCHORS.JAIL;
 // ─── Send to jail ─────────────────────────────────────────────────────────────
 /**
@@ -30,13 +32,14 @@ function sendToJail(session, playerId, io) {
     (0, MovementEngine_1.teleportPlayer)(session, playerId, JAIL_POSITION, io);
     player.inJail = true;
     player.jailTurnsWaited = 0;
+    (0, TradeLifecycle_1.voidTradesInvolvingPlayer)(session, playerId, Trade_types_1.TradeVoidReason.PLAYER_JAILED, io);
     logger_1.logger.info({ roomId: session.id, playerId }, 'Player sent to jail');
 }
 // ─── Pay bail ─────────────────────────────────────────────────────────────────
 /**
  * Player pays bail to leave jail immediately.
  * Deducts bail cost and clears jail flags.
- * Transitions to ROLLING_DICE so the player can still move this turn.
+ * Transitions to WAITING_FOR_ACTION so the player can still roll this turn.
  */
 function payBail(session, playerId, io) {
     const player = (0, GameSession_1.requirePlayer)(session, playerId);
@@ -48,7 +51,9 @@ function payBail(session, playerId, io) {
     }
     (0, GameSession_1.cashChange)(session, playerId, -bailCost, 'BAIL_PAID', io);
     releaseFromJail(player);
-    StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.ROLLING_DICE);
+    const releasedPayload = { playerId };
+    (0, broadcast_1.broadcastToRoom)(io, session.id, 'JAIL_RELEASED', releasedPayload);
+    StateMachine_1.StateMachine.transition(session, GameSession_types_1.TurnPhase.WAITING_FOR_ACTION);
     logger_1.logger.info({ roomId: session.id, playerId }, 'Player paid bail');
 }
 // ─── Roll for double in jail ──────────────────────────────────────────────────

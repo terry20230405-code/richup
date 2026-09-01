@@ -23,6 +23,12 @@ export declare function joinRoom(roomId: RoomId, nickname: string): {
     sessionToken: string;
 };
 export declare function deleteRoom(roomId: RoomId, requesterId: PlayerId): void;
+export interface LobbyPlayerRemovalResult {
+    removed: boolean;
+    roomDeleted: boolean;
+    newHostId: PlayerId | null;
+}
+export declare function removeLobbyPlayer(roomId: RoomId, playerId: PlayerId): LobbyPlayerRemovalResult;
 export declare function canStartGame(roomId: RoomId): {
     ok: boolean;
     reason?: string;
@@ -45,4 +51,5 @@ export declare function getSocketContext(socketId: string): {
     playerId: PlayerId;
     roomId: RoomId;
 } | undefined;
+export declare function hasConnectedSocket(roomId: RoomId, playerId: PlayerId): boolean;
 //# sourceMappingURL=RoomManager.d.ts.map

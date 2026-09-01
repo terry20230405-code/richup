@@ -70,6 +70,7 @@ exports.TimerNS = {
     auctionRound: (roomId) => `${roomId}:auction:round`,
     dyingRescue: (roomId, playerId) => `${roomId}:${playerId}:rescue`,
     dyingAfk: (roomId, playerId) => `${roomId}:${playerId}:afk`,
+    lobbyReconnect: (roomId, playerId) => `${roomId}:${playerId}:lobby-reconnect`,
     reconnect: (roomId, playerId) => `${roomId}:${playerId}:reconnect`,
 };
 //# sourceMappingURL=timerUtils.js.map

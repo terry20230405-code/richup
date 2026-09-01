@@ -5,6 +5,11 @@ import {
   type RoomSessionResponse,
 } from '@/api/rooms';
 import { connectGameSocket, disconnectGameSocket } from '@/socket/client';
+import { pinia } from '@/stores/pinia';
+import { useEventLogStore } from '@/stores/useEventLogStore';
+import { useGameStore } from '@/stores/useGameStore';
+import { usePlayersStore } from '@/stores/usePlayersStore';
+import { useSelfStore } from '@/stores/useSelfStore';
 import {
   clearStoredSocketSession,
   readStoredSocketSession,
@@ -23,9 +28,20 @@ const connectWithStoredSession = (session: StoredSocketSession): void => {
   });
 };
 
+const resetClientRoomState = (): void => {
+  useGameStore(pinia).reset();
+  usePlayersStore(pinia).reset();
+  useSelfStore(pinia).reset();
+  useEventLogStore(pinia).clear();
+};
+
 export const hostRoomAndConnect = async (
   hostNickname: string,
 ): Promise<RoomSessionResponse> => {
+  // A lobby page may have auto-resumed an older session. Stop that socket
+  // before switching the browser to the newly-created room.
+  disconnectGameSocket();
+  resetClientRoomState();
   const response = await createRoomSession(hostNickname);
 
   connectGameSocket({
@@ -41,6 +57,10 @@ export const joinRoomAndConnect = async (
   roomId: string,
   nickname: string,
 ): Promise<RoomSessionResponse> => {
+  // Joining is also a session switch; do not leave a previous socket active
+  // while the new room credentials are being persisted.
+  disconnectGameSocket();
+  resetClientRoomState();
   const response = await joinRoomSession(roomId, nickname);
 
   connectGameSocket({
@@ -69,6 +89,7 @@ export const disconnectRoomSession = (): void => {
 
 export const clearRoomSession = (): void => {
   disconnectGameSocket();
+  resetClientRoomState();
   clearStoredSocketSession();
 };
 
