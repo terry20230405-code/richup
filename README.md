@@ -6,9 +6,18 @@ Create a room, invite friends, and compete across a randomized 56-tile board. Bu
 
 ## Game Preview
 
+![Animated Richup gameplay: rolling the dice, landing on Osaka, buying the property, and passing the turn.](docs/images/gameplay.gif)
+
+*An 11-second recording of a real two-player match: roll, move, buy, and pass the turn.*
+
+<details>
+<summary>View the static screenshot</summary>
+
 ![Richup gameplay showing the full 56-tile board, 3D dice, property purchase and auction controls, and the multiplayer side panel.](docs/images/board.jpg)
 
 *An actual two-player match, with the full board, live turn controls, and player information.*
+
+</details>
 
 ## Features
 
