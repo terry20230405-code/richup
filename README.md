@@ -4,6 +4,12 @@ A multiplayer, turn-based property trading game built for the browser with **Vue
 
 Create a room, invite friends, and compete across a randomized 56-tile board. Buy properties, collect rent, negotiate trades, join auctions, and use cards to change the course of the game.
 
+## Game Preview
+
+![Richup gameplay showing the full 56-tile board, 3D dice, property purchase and auction controls, and the multiplayer side panel.](docs/images/board.jpg)
+
+*An actual two-player match, with the full board, live turn controls, and player information.*
+
 ## Features
 
 - **2–6 players per room** with a shared board and live turn updates.
